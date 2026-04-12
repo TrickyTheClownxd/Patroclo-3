@@ -2,78 +2,54 @@ const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder } =
 require('dotenv').config();
 const http = require('http');
 
-// --- 1. SERVIDOR PARA RENDER ---
-// Esto evita que Render apague el bot por falta de actividad web.
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Patroclo 3 esta vivo.');
-}).listen(process.env.PORT || 8080, () => {
-  console.log("🌐 Servidor HTTP listo.");
-});
+console.log("🚀 [INICIO] Arrancando Patroclo 3...");
 
-// --- 2. CONFIGURACIÓN DEL BOT ---
+// 1. CONFIGURACIÓN DEL BOT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent // Fundamental para comandos con "!"
+    GatewayIntentBits.MessageContent
   ]
 });
 
-// --- 3. COMANDOS DE BARRA (/) ---
-const commands = [
-  new SlashCommandBuilder()
-    .setName('hambre')
-    .setDescription('Inicia el Juego del Hambre'),
-  new SlashCommandBuilder()
-    .setName('calamar')
-    .setDescription('Inicia el Juego del Calamar'),
-].map(cmd => cmd.toJSON());
+// 2. SERVIDOR PARA RENDER (Arranca de inmediato)
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('Patroclo ONLINE');
+}).listen(process.env.PORT || 8080, () => {
+  console.log("🌐 [WEB] Servidor HTTP escuchando.");
+});
 
-// --- 4. EVENTO DE CONEXIÓN ---
-client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ ¡BOT ONLINE! Identificado como: ${c.user.tag}`);
-  
-  // Registrar los comandos en Discord
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  try {
-    await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('🚀 Comandos sincronizados.');
-  } catch (error) {
-    console.error('❌ Error al sincronizar comandos:', error);
+// 3. EVENTO READY
+client.once(Events.ClientReady, (c) => {
+  console.log(`✅ [DISCORD] ¡CONECTADO! Bot: ${c.user.tag}`);
+});
+
+// 4. COMANDOS SIMPLES
+client.on(Events.MessageCreate, async (msg) => {
+  if (msg.author.bot) return;
+  if (msg.content.toLowerCase() === '!ping') {
+    await msg.reply('🏓 ¡Pong! Patroclo está vivo.');
   }
 });
 
-// --- 5. MANEJO DE COMANDOS ---
-client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+// 5. LOGIN (Con reporte de error directo)
+console.log("🛠️ [LOGIN] Intentando entrar a Discord...");
 
-  if (interaction.commandName === 'hambre') {
-    await interaction.reply('🔥 **¡Los Juegos del Hambre han comenzado!** Que la suerte esté siempre de su lado.');
-  }
-  
-  if (interaction.commandName === 'calamar') {
-    await interaction.reply('🦑 **¡Juego del Calamar iniciado!** Jugador eliminado...');
-  }
-});
+const TOKEN = process.env.DISCORD_TOKEN;
 
-// Comandos con prefijo "!" (por si los preferís)
-client.on(Events.MessageCreate, async message => {
-  if (message.author.bot || !message.content.startsWith('!')) return;
+if (!TOKEN || TOKEN.length < 10) {
+  console.error("❌ [ERROR] El token no está en las variables de Render o es inválido.");
+} else {
+  client.login(TOKEN)
+    .then(() => console.log("✨ [LOGIN] Proceso completado sin errores."))
+    .catch(err => {
+      console.error("❌ [ERROR DE LOGIN]:", err.message);
+    });
+}
 
-  const command = message.content.slice(1).toLowerCase();
-
-  if (command === 'hambre') {
-    await message.channel.send('🔥 ¡Iniciando Juegos del Hambre desde comando de texto!');
-  }
-  
-  if (command === 'calamar') {
-    await message.channel.send('🦑 ¡Iniciando Juego del Calamar desde comando de texto!');
-  }
-});
-
-// --- 6. LOGIN ---
-client.login(process.env.DISCORD_TOKEN).catch(err => {
-  console.error("❌ Error crítico de login:", err.message);
-  console.error("Revisá que el DISCORD_TOKEN en Render sea el nuevo que generaste.");
+// Para que el proceso no muera
+process.on('unhandledRejection', error => {
+  console.error('Unhandled promise rejection:', error);
 });
