@@ -3,83 +3,100 @@ require('dotenv').config();
 const http = require('http');
 const axios = require('axios');
 
-// 1. Configuración de los comandos (Slash Commands)
+// --- 1. SERVIDOR PARA RENDER ---
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.write('Patroclo 3 está vivo y coleando');
+  res.end();
+}).listen(process.env.PORT || 8080);
+console.log("🌐 Servidor HTTP iniciado");
+
+// --- 2. CONFIGURACIÓN DE COMANDOS ---
 const commands = [
   new SlashCommandBuilder()
     .setName('hambre')
-    .setDescription('Inicia el Juego del Hambre con IA'),
+    .setDescription('Inicia el Juego del Hambre con narración de IA'),
   new SlashCommandBuilder()
     .setName('calamar')
-    .setDescription('Inicia el Juego del Calamar con IA'),
+    .setDescription('Inicia el Juego del Calamar con narración de IA'),
 ].map(command => command.toJSON());
 
-// 2. Inicializar cliente con los Intents necesarios
+// --- 3. INICIALIZAR CLIENTE ---
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent // Vital para los comandos con "!"
+    GatewayIntentBits.MessageContent
   ]
 });
 
-// --- LÓGICA DE IA ---
+// --- 4. LÓGICA DE IA ---
 async function pedirIA(prompt, motor = 'groq') {
   try {
+    // Intento con Groq
     if (motor === 'groq' && process.env.GROQ_API_KEY) {
-      const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
         model: "llama3-8b-8192",
         messages: [{ role: "user", content: prompt }]
       }, {
         headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` }
       });
-      return response.data.choices[0].message.content;
+      return res.data.choices[0].message.content;
     } 
     
+    // Intento con Gemini (fallback)
     if (motor === 'gemini' && process.env.GEMINI_API_KEY) {
-      const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+      const res = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`, {
         contents: [{ parts: [{ text: prompt }] }]
       });
-      return response.data.candidates[0].content.parts[0].text;
+      return res.data.candidates[0].content.parts[0].text;
     }
-    return "No se pudo conectar con la IA, pero el juego comienza igual.";
+    return "La IA no responde, pero la carnicería empieza igual.";
   } catch (error) {
-    console.error(`Error en ${motor}:`, error.message);
-    return "⚠️ ¡El sistema de IA falló! Pero la masacre debe continuar...";
+    console.error(`❌ Error IA:`, error.message);
+    return "⚠️ Error de conexión con el Oráculo. ¡Sobrevivan como puedan!";
   }
 }
 
-// --- LÓGICA DEL JUEGO ---
+// --- 5. FUNCIÓN INICIAR JUEGO (CON FIX DE TIEMPO) ---
 async function iniciarJuego(ctx, tipo) {
   const esSlash = ctx.isChatInputCommand && ctx.isChatInputCommand();
   
   try {
-    if (esSlash) await ctx.deferReply();
-    else await ctx.channel.sendTyping();
+    // PASO CLAVE: Decirle a Discord que espere (modo "pensando...")
+    if (esSlash) {
+      await ctx.deferReply(); 
+    } else {
+      await ctx.channel.sendTyping();
+    }
 
-    const prompt = `Escribe una intro muy corta y épica para: ${tipo === 'hambre' ? 'Los Juegos del Hambre' : 'El Juego del Calamar'}.`;
+    const prompt = `Escribe una intro muy corta, épica y algo turbia para una partida de: ${tipo === 'hambre' ? 'Los Juegos del Hambre' : 'El Juego del Calamar'}. En español y máximo 20 palabras.`;
+    
     const narracion = await pedirIA(prompt, 'groq');
-
     const titulo = tipo === 'hambre' ? '🔥 **JUEGOS DEL HAMBRE**' : '🦑 **JUEGO DEL CALAMAR**';
-    const msg = `${titulo}\n\n${narracion}`;
+    const respuestaFinal = `${titulo}\n\n${narracion}`;
 
-    if (esSlash) await ctx.editReply(msg);
-    else await ctx.channel.send(msg);
+    // ENVIAR RESPUESTA
+    if (esSlash) {
+      await ctx.editReply(respuestaFinal); // Se usa editReply porque ya hicimos defer
+    } else {
+      await ctx.channel.send(respuestaFinal);
+    }
   } catch (err) {
-    console.error("Error en iniciarJuego:", err);
+    console.error("❌ Error en iniciarJuego:", err.message);
+    if (esSlash) await ctx.editReply("Hubo un error técnico, pero denle gas al juego.");
   }
 }
 
-// --- EVENTOS ---
+// --- 6. EVENTOS ---
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ BOT ONLINE como: ${c.user.tag}`);
-
+  console.log(`✅ BOT ONLINE: ${c.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
-    console.log('⏳ Sincronizando comandos...');
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('🚀 Comandos de barra listos.');
+    console.log('🚀 Comandos de barra sincronizados');
   } catch (e) {
-    console.error('❌ Error sincronizando comandos:', e.message);
+    console.error('❌ Error REST:', e.message);
   }
 });
 
@@ -98,15 +115,8 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
-// --- LOGIN CON DEBUG ---
+// --- 7. LOGIN ---
+console.log("⏳ Conectando...");
 client.login(process.env.DISCORD_TOKEN).catch(err => {
-  console.error("❌ ERROR FATAL AL LOGUEAR:");
-  console.error("Mensaje:", err.message);
-  console.error("Asegúrate de que el DISCORD_TOKEN en Render sea el correcto.");
+  console.error("❌ FALLÓ EL LOGIN:", err.message);
 });
-
-// Servidor Dummy
-http.createServer((req, res) => {
-  res.write('Bot Vivo');
-  res.end();
-}).listen(process.env.PORT || 8080);
