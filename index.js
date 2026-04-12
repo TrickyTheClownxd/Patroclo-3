@@ -1,86 +1,54 @@
 const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder } = require('discord.js');
 require('dotenv').config();
 const http = require('http');
-const axios = require('axios');
 
-// 1. Servidor para Render
+// Servidor para Render (para que no se apague)
 http.createServer((req, res) => {
   res.writeHead(200);
-  res.end('Patroclo 3 operativo');
+  res.end('Patroclo 3 Online');
 }).listen(process.env.PORT || 8080);
 
-// 2. Comandos
-const commands = [
-  new SlashCommandBuilder().setName('hambre').setDescription('Juego del Hambre'),
-  new SlashCommandBuilder().setName('calamar').setDescription('Juego del Calamar'),
-].map(command => command.toJSON());
-
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
-// 3. Función de IA con Timeout de 5 segundos
-async function pedirIA(prompt) {
-  try {
-    const fuente = process.env.GROQ_API_KEY ? 'groq' : 'gemini';
-    
-    // Si no hay ninguna Key, ni intentamos
-    if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) return null;
+// Comandos de barra
+const commands = [
+  new SlashCommandBuilder().setName('hambre').setDescription('Juego del Hambre'),
+  new SlashCommandBuilder().setName('calamar').setDescription('Juego del Calamar')
+].map(cmd => cmd.toJSON());
 
-    const config = { timeout: 5000 }; // Si tarda más de 5s, aborta
-
-    if (fuente === 'groq') {
-      const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-        model: "llama3-8b-8192",
-        messages: [{ role: "user", content: prompt }]
-      }, {
-        headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
-        ...config
-      });
-      return res.data.choices[0].message.content;
-    }
-    return null;
-  } catch (e) {
-    console.error("Error llamando a la IA:", e.message);
-    return null;
-  }
-}
-
-// 4. Lógica de juego
-async function iniciarJuego(ctx, tipo) {
-  const esSlash = ctx.isChatInputCommand && ctx.isChatInputCommand();
-  
-  if (esSlash) await ctx.deferReply();
-  else await ctx.channel.sendTyping();
-
-  const prompt = `Intro épica corta para ${tipo}.`;
-  const narracion = await pedirIA(prompt);
-
-  const titulo = tipo === 'hambre' ? '🔥 **JUEGOS DEL HAMBRE**' : '🦑 **JUEGO DEL CALAMAR**';
-  const respuestaDefault = "¡La arena está lista! Que comience la carnicería.";
-  const finalMsg = `${titulo}\n\n${narracion || respuestaDefault}`;
-
-  if (esSlash) await ctx.editReply(finalMsg);
-  else await ctx.channel.send(finalMsg);
-}
-
-// 5. Eventos
+// Evento Ready
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ ${c.user.tag} conectado`);
+  console.log(`✅ BOT CONECTADO: ${c.user.tag}`);
+  
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-  } catch (e) { console.error(e); }
+    console.log('🚀 Comandos cargados');
+  } catch (e) {
+    console.error('Error cargando comandos:', e);
+  }
 });
 
-client.on(Events.InteractionCreate, async i => {
-  if (i.isChatInputCommand()) await iniciarJuego(i, i.commandName);
+// Respuesta simple (Sin IA por ahora para probar conexión)
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  await interaction.reply(`¡Iniciando ${interaction.commandName}! (Modo prueba)`);
 });
 
-client.on(Events.MessageCreate, async m => {
-  if (m.author.bot || !m.content.startsWith('!')) return;
-  const cmd = m.content.slice(1).toLowerCase();
-  if (['hambre', 'calamar'].includes(cmd)) await iniciarJuego(m, cmd);
+client.on(Events.MessageCreate, async message => {
+  if (message.author.bot || !message.content.startsWith('!')) return;
+  if (message.content === '!hambre' || message.content === '!calamar') {
+    await message.channel.send("¡Iniciando juego! (Modo prueba)");
+  }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// Login con manejo de error
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+  console.error('❌ ERROR DE LOGIN:', err.message);
+});
