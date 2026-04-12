@@ -3,12 +3,12 @@ require('dotenv').config();
 const http = require('http');
 const axios = require('axios');
 
-// 1. ABRIR PUERTO INMEDIATAMENTE (Para que Render no nos mate)
+// 1. ABRIR PUERTO INMEDIATAMENTE (Para que Render se ponga en "Live")
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Patroclo 3: Sistema de Monitoreo Activo');
 }).listen(process.env.PORT || 8080, () => {
-  console.log("🌐 [WEB] Puerto abierto. Render ya no debería quejarse.");
+  console.log("🌐 [WEB] Puerto 8080 abierto. Render detecta el servicio.");
 });
 
 console.log("🚀 [SISTEMA] Iniciando Patroclo 3...");
@@ -21,48 +21,79 @@ const client = new Client({
   ]
 });
 
-// 2. COMANDOS
+// 2. CONFIGURACIÓN DE COMANDOS
 const commands = [
   new SlashCommandBuilder().setName('hambre').setDescription('Inicia el Juego del Hambre'),
   new SlashCommandBuilder().setName('calamar').setDescription('Inicia el Juego del Calamar'),
 ].map(cmd => cmd.toJSON());
 
-// 3. IA
+// 3. LÓGICA DE IA (CON TIMEOUT)
 async function pedirIA(tipo) {
   try {
+    if (!process.env.GROQ_API_KEY) return null;
     const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
       model: "llama3-8b-8192",
-      messages: [{ role: "user", content: `Frase corta para ${tipo}` }]
+      messages: [{ role: "user", content: `Frase corta épica para inicio de ${tipo}` }]
     }, {
       headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
       timeout: 3000
     });
     return res.data.choices[0].message.content;
-  } catch (err) { return null; }
+  } catch (err) {
+    return null;
+  }
 }
 
 // 4. EVENTOS
 client.once(Events.ClientReady, async (c) => {
   console.log(`✅ [DISCORD] LOGUEADO COMO: ${c.user.tag}`);
+  
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('🚀 [BOT] Comandos sincronizados.');
-  } catch (e) { console.error('❌ [ERROR REST]:', e.message); }
+    console.log('🚀 [BOT] Comandos sincronizados correctamente.');
+  } catch (e) {
+    console.error('❌ [ERROR REST]:', e.message);
+  }
 });
 
 client.on(Events.InteractionCreate, async i => {
   if (!i.isChatInputCommand()) return;
+  
   await i.deferReply();
   const narracion = await pedirIA(i.commandName);
-  await i.editReply(`**${i.commandName.toUpperCase()}**\n${narracion || "¡Empiecen!"}`);
+  
+  const titulo = i.commandName === 'hambre' ? '🔥 **JUEGOS DEL HAMBRE**' : '🦑 **JUEGO DEL CALAMAR**';
+  const finalMsg = `${titulo}\n\n${narracion || "¡Que comience la acción!"}`;
+  
+  await i.editReply(finalMsg);
 });
 
-// 5. LOGIN CON CAPTURA DE ERROR TOTAL
+client.on(Events.MessageCreate, async m => {
+  if (m.author.bot || !m.content.startsWith('!')) return;
+  const cmd = m.content.slice(1).toLowerCase();
+  
+  if (['hambre', 'calamar'].includes(cmd)) {
+    await m.channel.sendTyping();
+    const narracion = await pedirIA(cmd);
+    await m.channel.send(narracion || "¡Iniciando juego!");
+  }
+});
+
+// 5. LOGIN CON SUPER DEBUG
 console.log("🛠️ [SISTEMA] Intentando login en Discord...");
 
-client.login(process.env.DISCORD_TOKEN).catch(err => {
-  console.error("❌ [ERROR DE LOGIN]:", err.message);
-  if (err.code === 'ENOTFOUND') console.error("👉 Problema de DNS/Internet en Render.");
-  if (err.message.includes("An invalid token")) console.error("👉 EL TOKEN ES INVÁLIDO.");
-});
+if (!process.env.DISCORD_TOKEN) {
+    console.log("❌ [DEBUG] ERROR: No existe la variable DISCORD_TOKEN en Render.");
+} else {
+    // Verificamos longitud básica para saber si es un token real
+    console.log("🔑 [DEBUG] Token detectado. Longitud: " + process.env.DISCORD_TOKEN.length + " caracteres.");
+    console.log("🔑 [DEBUG] Empieza con: " + process.env.DISCORD_TOKEN.substring(0, 8) + "...");
+
+    client.login(process.env.DISCORD_TOKEN).catch(err => {
+      console.error("❌ [ERROR DE LOGIN]:", err.message);
+      if (err.message.includes("Privileged intents")) {
+          console.error("👉 REVISÁ: Tenés que activar los Gateway Intents en el Discord Developer Portal.");
+      }
+    });
+}
