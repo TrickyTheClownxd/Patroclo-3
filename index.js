@@ -3,13 +3,17 @@ require('dotenv').config();
 const http = require('http');
 const axios = require('axios');
 
-// --- 1. SERVIDOR HTTP PARA RENDER ---
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Patroclo 3 está operando correctamente');
-}).listen(process.env.PORT || 8080);
+console.log("🚀 [SISTEMA] Iniciando Patroclo 3...");
 
-// --- 2. CONFIGURACIÓN DEL CLIENTE ---
+// --- 1. SERVIDOR HTTP (PARA RENDER) ---
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Patroclo 3 esta online');
+}).listen(process.env.PORT || 8080, () => {
+  console.log("🌐 [WEB] Servidor HTTP listo en puerto " + (process.env.PORT || 8080));
+});
+
+// --- 2. CONFIGURACIÓN DEL BOT ---
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -18,7 +22,6 @@ const client = new Client({
   ]
 });
 
-// --- 3. CONFIGURACIÓN DE COMANDOS ---
 const commands = [
   new SlashCommandBuilder()
     .setName('hambre')
@@ -28,9 +31,8 @@ const commands = [
     .setDescription('Inicia el Juego del Calamar con intro de IA'),
 ].map(cmd => cmd.toJSON());
 
-// --- 4. LÓGICA DE IA CON TIMEOUT SEGURO ---
+// --- 3. LÓGICA DE IA (CON TIEMPO LÍMITE) ---
 async function pedirIA(tipo) {
-  // Promesa de tiempo límite (3 segundos)
   const timeout = new Promise((_, reject) => 
     setTimeout(() => reject(new Error('timeout')), 3000)
   );
@@ -38,10 +40,9 @@ async function pedirIA(tipo) {
   const tareaIA = (async () => {
     try {
       if (!process.env.GROQ_API_KEY) return null;
-      
       const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
         model: "llama3-8b-8192",
-        messages: [{ role: "user", content: `Escribe una frase épica y muy corta de inicio para ${tipo === 'hambre' ? 'Los Juegos del Hambre' : 'El Juego del Calamar'}. Máximo 12 palabras.` }]
+        messages: [{ role: "user", content: `Frase épica de 10 palabras para el inicio de ${tipo}` }]
       }, {
         headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` }
       });
@@ -51,71 +52,70 @@ async function pedirIA(tipo) {
     }
   })();
 
-  // El primero que termine gana: la IA o el reloj de 3s
   return Promise.race([tareaIA, timeout]).catch(() => null);
 }
 
-// --- 5. FUNCIÓN PARA INICIAR EL JUEGO ---
+// --- 4. FUNCIÓN DEL JUEGO ---
 async function iniciarJuego(ctx, tipo) {
   const esSlash = ctx.isChatInputCommand && ctx.isChatInputCommand();
-  
+  console.log(`🎮 [JUEGO] Comando recibido: ${tipo}`);
+
   try {
-    // AVISO INMEDIATO A DISCORD (Crucial para evitar el error)
-    if (esSlash) {
-      await ctx.deferReply(); 
-    } else {
-      await ctx.channel.sendTyping();
-    }
+    if (esSlash) await ctx.deferReply();
+    else await ctx.channel.sendTyping();
 
     const narracion = await pedirIA(tipo);
     const titulo = tipo === 'hambre' ? '🔥 **JUEGOS DEL HAMBRE**' : '🦑 **JUEGO DEL CALAMAR**';
-    const textoDefault = tipo === 'hambre' 
-      ? "¡Que los tributos comiencen la batalla por la supervivencia!" 
-      : "¡Jugadores, prepárense! El primer juego está por comenzar.";
+    const msgBase = tipo === 'hambre' ? "¡Que los tributos luchen!" : "¡Jugadores, prepárense!";
     
-    const respuestaFinal = `${titulo}\n\n${narracion || textoDefault}`;
+    const respuestaFinal = `${titulo}\n\n${narracion || msgBase}`;
 
-    // RESPONDER SEGÚN EL TIPO DE MENSAJE
-    if (esSlash) {
-      await ctx.editReply(respuestaFinal);
-    } else {
-      await ctx.channel.send(respuestaFinal);
-    }
+    if (esSlash) await ctx.editReply(respuestaFinal);
+    else await ctx.channel.send(respuestaFinal);
   } catch (err) {
-    console.error("❌ Error en iniciarJuego:", err.message);
-    if (esSlash) await ctx.editReply("⚠️ Hubo un problema técnico, ¡pero el juego arranca igual!");
+    console.error("❌ [ERROR] En iniciarJuego:", err.message);
   }
 }
 
-// --- 6. EVENTOS ---
+// --- 5. EVENTOS ---
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ DISCORD: Conectado como ${c.user.tag}`);
+  console.log(`✅ [DISCORD] Online como ${c.user.tag}`);
   
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('🚀 Comandos de barra sincronizados.');
+    console.log('🚀 [BOT] Comandos sincronizados.');
   } catch (e) {
-    console.error('❌ Error registrando comandos:', e.message);
+    console.error('❌ [ERROR] Sincronizando comandos:', e.message);
   }
 });
 
-client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  if (['hambre', 'calamar'].includes(interaction.commandName)) {
-    await iniciarJuego(interaction, interaction.commandName);
-  }
+client.on(Events.InteractionCreate, async i => {
+  if (i.isChatInputCommand()) await iniciarJuego(i, i.commandName);
 });
 
-client.on(Events.MessageCreate, async message => {
-  if (message.author.bot || !message.content.startsWith('!')) return;
-  const cmd = message.content.slice(1).toLowerCase();
-  if (['hambre', 'calamar'].includes(cmd)) {
-    await iniciarJuego(message, cmd);
-  }
+client.on(Events.MessageCreate, async m => {
+  if (m.author.bot || !m.content.startsWith('!')) return;
+  const cmd = m.content.slice(1).toLowerCase();
+  if (['hambre', 'calamar'].includes(cmd)) await iniciarJuego(m, cmd);
 });
 
-// --- 7. LOGIN ---
-client.login(process.env.DISCORD_TOKEN).catch(err => {
-  console.error("❌ ERROR DE LOGIN:", err.message);
-});
+// --- 6. LOGIN CON DEBUG AVANZADO ---
+console.log("🛠️ [SISTEMA] Intentando conectar a Discord...");
+
+if (!process.env.DISCORD_TOKEN) {
+    console.error("❌ [ERROR] No existe la variable DISCORD_TOKEN en Render.");
+} else {
+    client.login(process.env.DISCORD_TOKEN)
+        .then(() => console.log("✅ [SISTEMA] Login exitoso."))
+        .catch(err => {
+            console.error("❌ [ERROR] Falló el login:");
+            console.error("Mensaje:", err.message);
+            if (err.message.includes("Privileged intents")) {
+                console.error("👉 REVISA: Activá los 3 Gateway Intents en el Discord Developer Portal y guardá cambios.");
+            }
+            if (err.message.includes("An invalid token")) {
+                console.error("👉 REVISA: El Token de Render no coincide con el de Discord.");
+            }
+        });
+}
