@@ -3,12 +3,12 @@ require('dotenv').config();
 const http = require('http');
 const axios = require('axios');
 
-// 1. ABRIR PUERTO INMEDIATAMENTE (Para que Render se ponga en "Live")
+// 1. SERVIDOR HTTP INMEDIATO (Para que Render no dé error de puerto)
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Patroclo 3: Sistema de Monitoreo Activo');
 }).listen(process.env.PORT || 8080, () => {
-  console.log("🌐 [WEB] Puerto 8080 abierto. Render detecta el servicio.");
+  console.log("🌐 [WEB] Servidor levantado. Render detecta el servicio.");
 });
 
 console.log("🚀 [SISTEMA] Iniciando Patroclo 3...");
@@ -27,7 +27,7 @@ const commands = [
   new SlashCommandBuilder().setName('calamar').setDescription('Inicia el Juego del Calamar'),
 ].map(cmd => cmd.toJSON());
 
-// 3. LÓGICA DE IA (CON TIMEOUT)
+// 3. IA (CON TIMEOUT)
 async function pedirIA(tipo) {
   try {
     if (!process.env.GROQ_API_KEY) return null;
@@ -39,9 +39,7 @@ async function pedirIA(tipo) {
       timeout: 3000
     });
     return res.data.choices[0].message.content;
-  } catch (err) {
-    return null;
-  }
+  } catch (err) { return null; }
 }
 
 // 4. EVENTOS
@@ -51,7 +49,7 @@ client.once(Events.ClientReady, async (c) => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('🚀 [BOT] Comandos sincronizados correctamente.');
+    console.log('🚀 [BOT] Comandos sincronizados.');
   } catch (e) {
     console.error('❌ [ERROR REST]:', e.message);
   }
@@ -59,20 +57,14 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.InteractionCreate, async i => {
   if (!i.isChatInputCommand()) return;
-  
   await i.deferReply();
   const narracion = await pedirIA(i.commandName);
-  
-  const titulo = i.commandName === 'hambre' ? '🔥 **JUEGOS DEL HAMBRE**' : '🦑 **JUEGO DEL CALAMAR**';
-  const finalMsg = `${titulo}\n\n${narracion || "¡Que comience la acción!"}`;
-  
-  await i.editReply(finalMsg);
+  await i.editReply(`**${i.commandName.toUpperCase()}**\n${narracion || "¡Que empiece el juego!"}`);
 });
 
 client.on(Events.MessageCreate, async m => {
   if (m.author.bot || !m.content.startsWith('!')) return;
   const cmd = m.content.slice(1).toLowerCase();
-  
   if (['hambre', 'calamar'].includes(cmd)) {
     await m.channel.sendTyping();
     const narracion = await pedirIA(cmd);
@@ -80,20 +72,30 @@ client.on(Events.MessageCreate, async m => {
   }
 });
 
-// 5. LOGIN CON SUPER DEBUG
+// 5. LOGIN CON CAPTURA DE ERRORES TOTAL
 console.log("🛠️ [SISTEMA] Intentando login en Discord...");
 
-if (!process.env.DISCORD_TOKEN) {
-    console.log("❌ [DEBUG] ERROR: No existe la variable DISCORD_TOKEN en Render.");
-} else {
-    // Verificamos longitud básica para saber si es un token real
-    console.log("🔑 [DEBUG] Token detectado. Longitud: " + process.env.DISCORD_TOKEN.length + " caracteres.");
-    console.log("🔑 [DEBUG] Empieza con: " + process.env.DISCORD_TOKEN.substring(0, 8) + "...");
+// Capturadores de errores globales del cliente
+client.on('error', (err) => console.error("❌ [CLIENT ERROR]:", err));
+client.on('warn', (m) => console.warn("⚠️ [WARN]:", m));
 
-    client.login(process.env.DISCORD_TOKEN).catch(err => {
-      console.error("❌ [ERROR DE LOGIN]:", err.message);
-      if (err.message.includes("Privileged intents")) {
-          console.error("👉 REVISÁ: Tenés que activar los Gateway Intents en el Discord Developer Portal.");
-      }
-    });
+if (!process.env.DISCORD_TOKEN) {
+    console.log("❌ [DEBUG] ERROR: No hay variable DISCORD_TOKEN en Render.");
+} else {
+    console.log("🔑 [DEBUG] Token detectado (Largo: " + process.env.DISCORD_TOKEN.length + ")");
+    
+    client.login(process.env.DISCORD_TOKEN)
+        .then(() => console.log("✅ [SISTEMA] El proceso de login terminó con éxito."))
+        .catch(err => {
+            console.error("❌ [FALLO EL LOGIN]:");
+            console.error("Mensaje:", err.message);
+            console.error("Código de error:", err.code);
+            
+            if (err.message.includes("Privileged intents")) {
+                console.error("👉 SOLUCIÓN: Anda a la pestaña 'Bot' en Discord Developer Portal y activa los 3 Gateway Intents.");
+            }
+            if (err.message.includes("invalid token")) {
+                console.error("👉 SOLUCIÓN: El token está mal copiado o es viejo. Resetéalo y pégalo de nuevo.");
+            }
+        });
 }
