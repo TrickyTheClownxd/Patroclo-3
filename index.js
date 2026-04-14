@@ -1,96 +1,92 @@
 const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 require('dotenv').config();
 const http = require('http');
-const axios = require('axios');
 
-// 1. SERVIDOR PARA RENDER
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Patroclo 3: Sistema Operativo');
-}).listen(process.env.PORT || 8080);
+// 1. CONFIGURACIÓN IA (Gemini)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// 2. CONFIGURACIÓN DEL CLIENTE
+// 2. CONFIGURACIÓN BOT
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent 
+    GatewayIntentBits.MessageContent
   ]
 });
 
-// 3. REGISTRO DE COMANDOS SLASH
-const commands = [
-  new SlashCommandBuilder().setName('hambre').setDescription('Inicia el Juego del Hambre'),
-  new SlashCommandBuilder().setName('calamar').setDescription('Inicia el Juego del Calamar'),
-].map(cmd => cmd.toJSON());
-
-// 4. FUNCIÓN PARA LLAMAR A LA IA (Groq)
-async function obtenerNarracionIA(juego) {
+// 3. FUNCIÓN NARRADORA (Gemini)
+async function narrarInicio(juego) {
   try {
-    // Si no tienes la API KEY de Groq, devolverá un texto por defecto
-    if (!process.env.GROQ_API_KEY) return null;
-
-    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-      model: "llama3-8b-8192",
-      messages: [
-        { role: "system", content: "Eres un narrador épico y oscuro." },
-        { role: "user", content: `Escribe una frase de inicio muy corta (máximo 15 palabras) para un juego de ${juego}.` }
-      ]
-    }, {
-      headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
-      timeout: 4000
-    });
-    return response.data.choices[0].message.content;
-  } catch (error) {
-    console.error("Error Groq:", error.message);
+    if (!process.env.GEMINI_API_KEY) return null;
+    const prompt = `Eres un narrador épico. Escribe una frase de inicio para un juego de ${juego}. Máximo 20 palabras.`;
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  } catch (err) {
+    console.error("Error Gemini:", err.message);
     return null;
   }
 }
 
-// 5. EVENTO READY
-client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ [SISTEMA] Patroclo 3 conectado como ${c.user.tag}`);
+// 4. LÓGICA DE JUEGO
+async function ejecutarJuego(ctx, tipo) {
+  const esSlash = ctx.isChatInputCommand && ctx.isChatInputCommand();
+  if (esSlash) await ctx.deferReply();
+
+  const titulo = tipo === 'hambre' ? '🔥 **JUEGOS DEL HAMBRE**' : '🦑 **JUEGO DEL CALAMAR**';
+  const backup = tipo === 'hambre' ? '¡Que la suerte esté siempre de su lado!' : '¡Jugador eliminado!';
   
+  const narracion = await narrarInicio(titulo);
+  const respuesta = `${titulo}\n\n${narracion || backup}`;
+
+  if (esSlash) await ctx.editReply(respuesta);
+  else await ctx.reply(respuesta);
+}
+
+// 5. EVENTOS
+client.once(Events.ClientReady, async (c) => {
+  console.log(`✅ Patroclo 3 conectado como ${c.user.tag}`);
+  
+  // Registrar Slash Commands
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const commands = [
+    new SlashCommandBuilder().setName('hambre').setDescription('Inicia los Juegos del Hambre'),
+    new SlashCommandBuilder().setName('calamar').setDescription('Inicia el Juego del Calamar'),
+  ].map(cmd => cmd.toJSON());
+
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('✨ [SISTEMA] Comandos de barra actualizados.');
-  } catch (err) {
-    console.error('❌ [ERROR REST]:', err);
-  }
+  } catch (e) { console.error("Error comandos:", e); }
 });
 
-// 6. ESCUCHA DE MENSAJES (Comandos con !)
+// Comandos por mensaje (!) - CORREGIDO
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
-  const content = message.content.toLowerCase().trim();
+  if (message.content === '!ping') return message.reply('🏓 ¡Pong!');
 
-  if (content === '!ping') {
-    return message.reply('🏓 ¡Pong! El bot responde correctamente.');
-  }
-
-  if (content === '!hambre' || content === '!calamar') {
-    await message.channel.sendTyping();
-    const tipo = content.includes('hambre') ? 'Los Juegos del Hambre' : 'El Juego del Calamar';
-    const narracion = await obtenerNarracionIA(tipo);
-    
-    const emoji = content.includes('hambre') ? '🔥' : '🦑';
-    return message.reply(`${emoji} **${tipo.toUpperCase()}**\n\n${narracion || "¡Que comience la carnicería! Suerte a todos."}`);
+  if (message.content === '!hambre' || message.content === '!calamar') {
+    const tipo = message.content.includes('hambre') ? 'hambre' : 'calamar';
+    // Creamos un contexto compatible para la función
+    const ctx = { 
+      reply: (text) => message.channel.send(text),
+      isChatInputCommand: () => false 
+    };
+    await ejecutarJuego(ctx, tipo);
   }
 });
 
-// 7. ESCUCHA DE COMANDOS SLASH (/)
+// Comandos por barra (/)
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-
-  await interaction.deferReply();
-  const tipo = interaction.commandName === 'hambre' ? 'Los Juegos del Hambre' : 'El Juego del Calamar';
-  const narracion = await obtenerNarracionIA(tipo);
-  
-  const emoji = interaction.commandName === 'hambre' ? '🔥' : '🦑';
-  await interaction.editReply(`${emoji} **${tipo.toUpperCase()}**\n\n${narracion || "¡Los juegos han comenzado!"}`);
+  await ejecutarJuego(interaction, interaction.commandName);
 });
 
-// 8. LOGIN
+// 6. LOGIN Y SERVER
 client.login(process.env.DISCORD_TOKEN);
+
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('Patroclo 3 con Gemini activo');
+}).listen(process.env.PORT || 8080);
