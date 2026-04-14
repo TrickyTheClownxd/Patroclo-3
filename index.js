@@ -4,52 +4,67 @@ const http = require('http');
 
 console.log("🚀 [INICIO] Arrancando Patroclo 3...");
 
-// 1. CONFIGURACIÓN DEL BOT
+// 1. CONFIGURACIÓN DEL BOT (Asegúrate de tener los 3 activados en el portal)
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent 
   ]
 });
 
-// 2. SERVIDOR PARA RENDER (Arranca de inmediato)
+// 2. SERVIDOR HTTP
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Patroclo ONLINE');
-}).listen(process.env.PORT || 8080, () => {
-  console.log("🌐 [WEB] Servidor HTTP escuchando.");
-});
+}).listen(process.env.PORT || 8080);
 
-// 3. EVENTO READY
-client.once(Events.ClientReady, (c) => {
+// 3. REGISTRO DE COMANDOS SLASH (/)
+const commands = [
+  new SlashCommandBuilder().setName('hambre').setDescription('Inicia el Juego del Hambre'),
+  new SlashCommandBuilder().setName('calamar').setDescription('Inicia el Juego del Calamar'),
+].map(cmd => cmd.toJSON());
+
+client.once(Events.ClientReady, async (c) => {
   console.log(`✅ [DISCORD] ¡CONECTADO! Bot: ${c.user.tag}`);
-});
-
-// 4. COMANDOS SIMPLES
-client.on(Events.MessageCreate, async (msg) => {
-  if (msg.author.bot) return;
-  if (msg.content.toLowerCase() === '!ping') {
-    await msg.reply('🏓 ¡Pong! Patroclo está vivo.');
+  
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
+    console.log('✨ [SISTEMA] Comandos (/) sincronizados.');
+  } catch (error) {
+    console.error('❌ Error sincronizando comandos:', error);
   }
 });
 
-// 5. LOGIN (Con reporte de error directo)
-console.log("🛠️ [LOGIN] Intentando entrar a Discord...");
+// 4. ESCUCHA DE MENSAJES (Comandos con !)
+client.on(Events.MessageCreate, async (msg) => {
+  if (msg.author.bot) return;
 
-const TOKEN = process.env.DISCORD_TOKEN;
+  // DEBUG: Esto saldrá en Render cada vez que alguien escriba algo
+  console.log(`📩 [MENSAJE] ${msg.author.tag}: ${msg.content}`);
 
-if (!TOKEN || TOKEN.length < 10) {
-  console.error("❌ [ERROR] El token no está en las variables de Render o es inválido.");
-} else {
-  client.login(TOKEN)
-    .then(() => console.log("✨ [LOGIN] Proceso completado sin errores."))
-    .catch(err => {
-      console.error("❌ [ERROR DE LOGIN]:", err.message);
-    });
-}
+  if (msg.content.toLowerCase() === '!ping') {
+    await msg.reply('🏓 ¡Pong! El sistema está operativo.');
+  }
 
-// Para que el proceso no muera
-process.on('unhandledRejection', error => {
-  console.error('Unhandled promise rejection:', error);
+  if (msg.content.toLowerCase() === '!hambre') {
+    await msg.reply('🔥 **¡Los Juegos del Hambre han comenzado!**');
+  }
 });
+
+// 5. ESCUCHA DE COMANDOS SLASH (/)
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'hambre') {
+    await interaction.reply('🔥 ¡Que los tributos comiencen la batalla!');
+  }
+  
+  if (interaction.commandName === 'calamar') {
+    await interaction.reply('🦑 ¡Jugador eliminado! El juego del calamar continúa.');
+  }
+});
+
+// 6. LOGIN
+client.login(process.env.DISCORD_TOKEN).catch(err => console.error("❌ ERROR:", err.message));
