@@ -1,135 +1,264 @@
-const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const axios = require('axios');
+const fs = require("fs");
 require('dotenv').config();
 const http = require('http');
 
-// --- 1. CONFIGURACIÓN DE IA (Doble API) ---
+// ================= IA =================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// --- 2. CONFIGURACIÓN DEL BOT ---
+// ================= CLIENT =================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers
   ]
 });
 
-// --- 3. NARRACIÓN CON IA (Prioridad Gemini, Respaldo Groq) ---
-async function obtenerNarracionIA(juego) {
-  const prompt = `Eres un narrador épico y oscuro. Escribe una frase de inicio de máximo 15 palabras para un juego de ${juego}.`;
-
-  // Intento con Gemini
-  try {
-    if (process.env.GEMINI_API_KEY) {
-      console.log(`🤖 [IA] Consultando a Gemini para ${juego}...`);
-      const result = await geminiModel.generateContent(prompt);
-      return result.response.text();
-    }
-  } catch (err) {
-    console.error("⚠️ [IA] Gemini falló, intentando con Groq...");
+// ================= DB =================
+function cargarDB() {
+  if (!fs.existsSync("db.json")) {
+    fs.writeFileSync("db.json", JSON.stringify({
+      players: {},
+      global: { eventosDesbloqueados: [], partidasJugadas: 0 },
+      apuestas: {}
+    }, null, 2));
   }
+  return JSON.parse(fs.readFileSync("db.json"));
+}
 
-  // Respaldo con Groq
+function guardarDB(db) {
+  fs.writeFileSync("db.json", JSON.stringify(db, null, 2));
+}
+
+// ================= MEMORY =================
+function cargarMemory() {
+  if (!fs.existsSync("memory.json")) {
+    fs.writeFileSync("memory.json", JSON.stringify({
+      partidaActiva: false,
+      jugadores: [],
+      ronda: 0,
+      historial: [],
+      traiciones: [],
+      canalId: null
+    }, null, 2));
+  }
+  return JSON.parse(fs.readFileSync("memory.json"));
+}
+
+function guardarMemory(mem) {
+  fs.writeFileSync("memory.json", JSON.stringify(mem, null, 2));
+}
+
+// ================= IA =================
+async function narrarEvento(texto, mem) {
   try {
-    if (process.env.GROQ_API_KEY) {
-      console.log(`🤖 [IA] Consultando a Groq para ${juego}...`);
-      const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-        model: "llama3-8b-8192",
-        messages: [{ role: "system", content: "Eres un narrador épico y oscuro." }, { role: "user", content: prompt }]
-      }, {
-        headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
-        timeout: 4000
-      });
-      return response.data.choices[0].message.content;
-    }
-  } catch (error) {
-    console.error("❌ [IA] Ambas IAs fallaron:", error.message);
-    return null;
+    const contexto = mem.historial.slice(-3).join(" | ");
+    const prompt = `Historial: ${contexto}. Evento: ${texto}. Narración corta, oscura.`;
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  } catch {
+    return "El destino se ejecuta...";
   }
 }
 
-// --- 4. FUNCIÓN GENÉRICA PARA INICIAR JUEGO (Tu Lógica Base) ---
-async function iniciarJuego(ctx, tipo, originalMsg = null) {
-  const guildName = originalMsg ? originalMsg.guild.name : ctx.guild.name;
-  console.log(`🎮 [JUEGO] Iniciando ${tipo} en: [${guildName}]`);
+// ================= EVENTOS =================
+function checkEventosRaros(db, jugadores, ronda) {
+  let eventos = [];
+  const vivos = jugadores.filter(j => j.vivo);
 
-  const esSlash = ctx.isChatInputCommand && ctx.isChatInputCommand();
-  if (esSlash) await ctx.deferReply();
-  else await ctx.channel.sendTyping();
+  if (db.global.eventosDesbloqueados.includes("ente_techo") && ronda >= 2)
+    eventos.push("ente_techo");
 
-  const titulo = tipo === 'hambre' ? 'Los Juegos del Hambre' : 'El Juego del Calamar';
-  const emoji = tipo === 'hambre' ? '🔥' : '🦑';
-  const backup = tipo === 'hambre' ? '¡Comienza la partida del **Juego del Hambre**!' : '¡Comienza la partida del **Juego del Calamar**!';
+  if (vivos.length <= 3) eventos.push("traicion_final");
 
-  const narracion = await obtenerNarracionIA(titulo);
-  const respuesta = `${emoji} **${titulo.toUpperCase()}**\n\n${narracion || backup}`;
+  if (Math.random() < 0.15) eventos.push("loot");
 
-  if (esSlash) await ctx.editReply(respuesta);
-  else await ctx.reply(respuesta);
-  
-  console.log(`✅ [RESPUESTA] Enviada con éxito a ${guildName}`);
+  return eventos;
 }
 
-// --- 5. EVENTOS Y LOGS DE DISCORD ---
+async function ejecutarEventoRaro(ev, jugadores, mem) {
+  const vivos = jugadores.filter(j => j.vivo);
+
+  if (ev === "ente_techo") {
+    const v = vivos[Math.floor(Math.random() * vivos.length)];
+    v.vivo = false;
+    return `El Ente del Techo elimina a ${v.nombre}`;
+  }
+
+  if (ev === "loot") {
+    const j = vivos[Math.floor(Math.random() * vivos.length)];
+    j.kills += 2;
+    return `${j.nombre} obtiene poder prohibido`;
+  }
+
+  if (ev === "traicion_final") {
+    const a = vivos[0];
+    const b = vivos[1];
+    b.vivo = false;
+    mem.traiciones.push(`${a.nombre} traicionó a ${b.nombre}`);
+    return `${a.nombre} traiciona a ${b.nombre}`;
+  }
+}
+
+// ================= MOTOR =================
+async function continuarPartida(channel) {
+  let db = cargarDB();
+  let mem = cargarMemory();
+
+  let jugadores = mem.jugadores;
+
+  while (jugadores.filter(j => j.vivo).length > 1) {
+    const vivos = jugadores.filter(j => j.vivo);
+    let eventosRonda = [];
+
+    for (let i = 0; i < Math.max(1, Math.floor(vivos.length / 2)); i++) {
+      const a = vivos[Math.floor(Math.random() * vivos.length)];
+      const b = vivos.filter(j => j !== a)[Math.floor(Math.random() * (vivos.length - 1))];
+
+      if (!a || !b) continue;
+
+      b.vivo = false;
+      a.kills++;
+
+      const texto = `${a.nombre} elimina a ${b.nombre}`;
+      mem.historial.push(`R${mem.ronda}: ${texto}`);
+      eventosRonda.push(await narrarEvento(texto, mem));
+    }
+
+    const raros = checkEventosRaros(db, jugadores, mem.ronda);
+
+    for (const ev of raros) {
+      const txt = await ejecutarEventoRaro(ev, jugadores, mem);
+      mem.historial.push(`R${mem.ronda}: ${txt}`);
+      eventosRonda.push(await narrarEvento(txt, mem));
+    }
+
+    guardarMemory(mem);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🔥 RONDA ${mem.ronda}`)
+      .setDescription(eventosRonda.join("\n\n"));
+
+    await channel.send({ embeds: [embed] });
+
+    setTimeout(() => channel.send("👁️ Algo observa..."), 30000);
+    await new Promise(r => setTimeout(r, 60000));
+
+    mem.ronda++;
+    guardarMemory(mem);
+  }
+
+  const ganador = jugadores.find(j => j.vivo);
+
+  // guardar progreso
+  jugadores.forEach(j => {
+    if (!db.players[j.nombre]) db.players[j.nombre] = { wins: 0, kills: 0, partidas: 0 };
+    db.players[j.nombre].kills += j.kills;
+    db.players[j.nombre].partidas++;
+  });
+
+  db.players[ganador.nombre].wins++;
+  db.global.partidasJugadas++;
+
+  guardarDB(db);
+
+  const embed = new EmbedBuilder()
+    .setTitle("🏆 FINAL")
+    .setDescription(`Ganador: ${ganador.nombre}`)
+    .addFields({
+      name: "📜 Historia",
+      value: mem.historial.slice(-5).join("\n") || "Sin datos"
+    });
+
+  await channel.send({ embeds: [embed] });
+
+  // reset memory
+  mem.partidaActiva = false;
+  mem.jugadores = [];
+  mem.historial = [];
+  mem.traiciones = [];
+  guardarMemory(mem);
+}
+
+// ================= INICIAR =================
+async function iniciarPartida(ctx) {
+  const guild = ctx.guild;
+  const miembros = await guild.members.fetch();
+
+  let jugadores = miembros
+    .filter(m => !m.user.bot)
+    .map(m => ({
+      nombre: m.user.username,
+      vivo: true,
+      kills: 0
+    }));
+
+  if (jugadores.length < 2) return ctx.reply("❌ No hay suficientes jugadores.");
+
+  let mem = cargarMemory();
+
+  mem.partidaActiva = true;
+  mem.jugadores = jugadores;
+  mem.ronda = 1;
+  mem.historial = [];
+  mem.traiciones = [];
+  mem.canalId = ctx.channel.id;
+
+  guardarMemory(mem);
+
+  ctx.reply("🎮 Partida iniciada...");
+  continuarPartida(ctx.channel);
+}
+
+// ================= EVENTOS =================
 client.once(Events.ClientReady, async (c) => {
-  console.log(`\n-----------------------------------------`);
-  console.log(`✅ [SISTEMA] Patroclo 3 online: ${c.user.tag}`);
-  console.log(`🌍 [INFO] Servidores: ${c.guilds.cache.size}`);
-  c.guilds.cache.forEach(g => console.log(`   - ${g.name} (${g.id})`));
-  console.log(`-----------------------------------------\n`);
-  
+  console.log("✅ Patroclo persistente activo");
+
+  const mem = cargarMemory();
+
+  // 🔄 REANUDAR
+  if (mem.partidaActiva && mem.canalId) {
+    const channel = await client.channels.fetch(mem.canalId);
+    if (channel) continuarPartida(channel);
+  }
+
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
   const commands = [
-    new SlashCommandBuilder().setName('hambre').setDescription('Inicia el Juego del Hambre'),
-    new SlashCommandBuilder().setName('calamar').setDescription('Inicia el Juego del Calamar'),
-  ].map(cmd => cmd.toJSON());
+    new SlashCommandBuilder().setName('hambre').setDescription('Inicia partida')
+  ].map(c => c.toJSON());
 
-  try {
-    await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('✨ [SISTEMA] Slash commands sincronizados.');
-  } catch (err) { console.error('❌ [ERROR REST]:', err); }
+  await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
 });
 
-// Mensajes clásicos (!)
-client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
-  const content = message.content.toLowerCase().trim();
+client.on(Events.MessageCreate, async (msg) => {
+  if (msg.author.bot) return;
 
-  if (content === '!ping') {
-    console.log(`📩 [PING] Recibido de ${message.author.tag}`);
-    return message.reply('🏓 ¡Pong! El sistema está operativo.');
-  }
+  const db = cargarDB();
 
-  if (content === '!hambre' || content === '!calamar') {
-    console.log(`📩 [COMANDO] !${content.slice(1)} por ${message.author.tag}`);
-    const tipo = content.includes('hambre') ? 'hambre' : 'calamar';
-    // Adaptamos el contexto para que funcione con tu lógica base
-    const ctx = { 
-      reply: (msg) => message.channel.send(msg),
-      channel: message.channel,
-      guild: message.guild,
-      isChatInputCommand: () => false 
-    };
-    await iniciarJuego(ctx, tipo, message);
+  if (msg.content === "!hambre") iniciarPartida(msg);
+
+  if (msg.content === "!ritual") {
+    if (!db.global.eventosDesbloqueados.includes("ente_techo")) {
+      db.global.eventosDesbloqueados.push("ente_techo");
+      guardarDB(db);
+      msg.reply("🌑 Has invocado al Ente...");
+    }
   }
 });
 
-// Comandos de barra (/)
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  console.log(`🖱️ [SLASH] /${interaction.commandName} por ${interaction.user.tag}`);
-  await iniciarJuego(interaction, interaction.commandName);
+client.on(Events.InteractionCreate, async (i) => {
+  if (i.isChatInputCommand()) iniciarPartida(i);
 });
 
-// --- 6. LOGIN Y SERVIDOR ÚNICO ---
-client.login(process.env.DISCORD_TOKEN).catch(e => console.error("❌ [LOGIN ERROR]", e.message));
+// ================= LOGIN =================
+client.login(process.env.DISCORD_TOKEN);
 
+// ================= SERVER =================
 http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Patroclo 3: Activo y Fusionado');
-}).listen(process.env.PORT || 8080, () => {
-  console.log(`🌐 [WEB] Servidor HTTP escuchando en puerto ${process.env.PORT || 8080}`);
-});
+  res.end("Patroclo persistente activo");
+}).listen(process.env.PORT || 8080);
