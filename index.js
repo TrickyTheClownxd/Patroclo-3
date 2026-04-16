@@ -9,7 +9,6 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-// ================= CLIENT =================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -61,8 +60,8 @@ function guardarMemory(mem) {
 // ================= IA =================
 async function narrarEvento(texto, mem) {
   try {
-    const contexto = mem.historial.slice(-3).join(" | ");
-    const prompt = `Historia: ${contexto}. Evento: ${texto}. Narración corta, oscura y épica.`;
+    const contexto = mem.historial.slice(-5).join(" | ");
+    const prompt = `Historia: ${contexto}. Evento: ${texto}. Narración brutal, oscura y corta.`;
     const result = await model.generateContent(prompt);
     return result.response.text();
   } catch {
@@ -73,7 +72,7 @@ async function narrarEvento(texto, mem) {
 async function decidirEvento(jugadores) {
   try {
     const vivos = jugadores.filter(j => j.vivo);
-    const lista = vivos.map(j => `${j.nombre}(${j.personalidad})`).join(", ");
+    const lista = vivos.map(j => `${j.nombre}(${j.personalidad}/${j.rol})`).join(", ");
 
     const prompt = `Jugadores: ${lista}
 Elegí:
@@ -95,24 +94,34 @@ traicion|A|B`;
 
     const data = await res.json();
     return data.choices[0].message.content.trim().split("|");
+
   } catch {
     return null;
   }
 }
 
+// ================= ROLES =================
+const roles = ["traidor", "cazador", "superviviente", "neutral"];
+const personalidades = ["agresivo", "cobarde", "estratega"];
+
 // ================= MOTOR =================
 async function continuarPartida(channel) {
+  console.log("🧠 Simulación iniciada");
+
   let db = cargarDB();
   let mem = cargarMemory();
   let jugadores = mem.jugadores;
 
   while (jugadores.filter(j => j.vivo).length > 1) {
+    console.log("⚔️ Ronda", mem.ronda);
+
     let eventos = [];
 
     for (let i = 0; i < 2; i++) {
       const decision = await decidirEvento(jugadores);
 
       let texto = "";
+
       if (decision) {
         const [tipo, aN, bN] = decision;
         const a = jugadores.find(j => j.nombre === aN && j.vivo);
@@ -151,23 +160,44 @@ async function continuarPartida(channel) {
 
     await channel.send({ embeds: [embed] });
 
-    await new Promise(r => setTimeout(r, 60000));
+    // 📺 MODO STREAM (intermedio)
+    await new Promise(r => setTimeout(r, 30000));
+    await channel.send("📺 Intermedio... recapitulando muertes...");
+
+    const resumen = mem.historial.slice(-3).join("\n");
+    await channel.send(`💀 Últimos eventos:\n${resumen}`);
+
+    await new Promise(r => setTimeout(r, 30000));
+
     mem.ronda++;
+    guardarMemory(mem);
   }
 
   const ganador = jugadores.find(j => j.vivo);
 
+  // 💰 recompensas + apuestas
+  db.apuestas = db.apuestas || {};
+
+  for (const user in db.apuestas) {
+    const apuesta = db.apuestas[user];
+    if (apuesta.objetivo === ganador.nombre) {
+      if (!db.players[user]) db.players[user] = { dinero: 0 };
+      db.players[user].dinero += apuesta.monto * 2;
+    }
+  }
+
+  db.apuestas = {};
+
   if (!db.players[ganador.nombre]) {
-    db.players[ganador.nombre] = { wins: 0, kills: 0, partidas: 0, dinero: 0 };
+    db.players[ganador.nombre] = { wins: 0, dinero: 0 };
   }
 
   db.players[ganador.nombre].wins++;
   db.players[ganador.nombre].dinero += 100;
-  db.global.partidasJugadas++;
 
   guardarDB(db);
 
-  await channel.send(`🏆 Ganador: ${ganador.nombre} (+100 monedas)`);
+  await channel.send(`🏆 Ganador: ${ganador.nombre}`);
 
   mem.partidaActiva = false;
   guardarMemory(mem);
@@ -175,9 +205,13 @@ async function continuarPartida(channel) {
 
 // ================= INICIAR =================
 async function iniciarPartida(ctx) {
-  const miembros = await ctx.guild.members.fetch();
+  let mem = cargarMemory();
 
-  const personalidades = ["agresivo", "cobarde", "estratega", "traidor"];
+  if (mem.partidaActiva) {
+    return responder(ctx, "⚠️ Ya hay una partida en curso.");
+  }
+
+  const miembros = await ctx.guild.members.fetch();
 
   let jugadores = miembros
     .filter(m => !m.user.bot)
@@ -185,10 +219,9 @@ async function iniciarPartida(ctx) {
       nombre: m.user.username,
       vivo: true,
       kills: 0,
+      rol: roles[Math.floor(Math.random() * roles.length)],
       personalidad: personalidades[Math.floor(Math.random() * personalidades.length)]
     }));
-
-  let mem = cargarMemory();
 
   mem.partidaActiva = true;
   mem.jugadores = jugadores;
@@ -200,7 +233,7 @@ async function iniciarPartida(ctx) {
   guardarMemory(mem);
 
   await responder(ctx, "🎮 Partida iniciada...");
-  continuarPartida(ctx.channel);
+  setTimeout(() => continuarPartida(ctx.channel), 1000);
 }
 
 // ================= SLASH =================
@@ -235,17 +268,26 @@ client.on(Events.MessageCreate, async (msg) => {
     msg.reply(`💰 Dinero: ${user?.dinero || 0}`);
   }
 
-  if (cmd === "!ritual") {
+  if (cmd === "!apostar") {
+    const objetivo = args[1];
+    const monto = parseInt(args[2]);
+
     const db = cargarDB();
-    db.global.eventosDesbloqueados.push("ente_techo");
+    db.apuestas[msg.author.username] = { objetivo, monto };
     guardarDB(db);
-    msg.reply("🌑 Has invocado algo...");
+
+    msg.reply("💰 Apuesta registrada");
+  }
+
+  if (cmd === "!estado") {
+    const mem = cargarMemory();
+    msg.reply("```json\n" + JSON.stringify(mem, null, 2) + "\n```");
   }
 });
 
 // ================= READY =================
 client.once(Events.ClientReady, async () => {
-  console.log("🔥 Patroclo FULL activo");
+  console.log("🔥 Patroclo DIOS activo");
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
@@ -255,7 +297,10 @@ client.once(Events.ClientReady, async () => {
     new SlashCommandBuilder().setName('balance').setDescription('Ver dinero')
   ].map(c => c.toJSON());
 
-  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+  await rest.put(
+    Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
+    { body: commands }
+  );
 
   const mem = cargarMemory();
   if (mem.partidaActiva && mem.canalId) {
@@ -267,5 +312,5 @@ client.once(Events.ClientReady, async () => {
 client.login(process.env.DISCORD_TOKEN);
 
 http.createServer((req, res) => {
-  res.end("Bot activo");
+  res.end("Patroclo activo");
 }).listen(process.env.PORT || 8080);
