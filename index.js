@@ -19,6 +19,12 @@ const client = new Client({
   ]
 });
 
+// ================= HELPERS =================
+async function responder(ctx, contenido) {
+  if (ctx.editReply) return ctx.editReply(contenido);
+  if (ctx.reply) return ctx.reply(contenido);
+}
+
 // ================= DB =================
 function cargarDB() {
   if (!fs.existsSync("db.json")) {
@@ -30,7 +36,6 @@ function cargarDB() {
   }
   return JSON.parse(fs.readFileSync("db.json"));
 }
-
 function guardarDB(db) {
   fs.writeFileSync("db.json", JSON.stringify(db, null, 2));
 }
@@ -49,28 +54,32 @@ function cargarMemory() {
   }
   return JSON.parse(fs.readFileSync("memory.json"));
 }
-
 function guardarMemory(mem) {
   fs.writeFileSync("memory.json", JSON.stringify(mem, null, 2));
 }
 
-// ================= PERSONALIDADES =================
-const personalidades = ["agresivo", "cobarde", "estratega", "traidor"];
+// ================= IA =================
+async function narrarEvento(texto, mem) {
+  try {
+    const contexto = mem.historial.slice(-3).join(" | ");
+    const prompt = `Historia: ${contexto}. Evento: ${texto}. Narración corta, oscura y épica.`;
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  } catch {
+    return texto;
+  }
+}
 
-// ================= IA DECISION (GROQ) =================
 async function decidirEvento(jugadores) {
   try {
     const vivos = jugadores.filter(j => j.vivo);
-
     const lista = vivos.map(j => `${j.nombre}(${j.personalidad})`).join(", ");
 
-    const prompt = `
-Jugadores: ${lista}
+    const prompt = `Jugadores: ${lista}
 Elegí:
 ataque|A|B
 accidente|A|-
-traicion|A|B
-`;
+traicion|A|B`;
 
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -86,22 +95,8 @@ traicion|A|B
 
     const data = await res.json();
     return data.choices[0].message.content.trim().split("|");
-
   } catch {
     return null;
-  }
-}
-
-// ================= IA NARRACIÓN (GEMINI) =================
-async function narrarEvento(texto, mem) {
-  try {
-    const contexto = mem.historial.slice(-3).join(" | ");
-    const prompt = `Historia: ${contexto}. Evento: ${texto}. Narración épica corta.`;
-
-    const result = await model.generateContent(prompt);
-    return result.response.text();
-  } catch {
-    return texto;
   }
 }
 
@@ -118,7 +113,6 @@ async function continuarPartida(channel) {
       const decision = await decidirEvento(jugadores);
 
       let texto = "";
-
       if (decision) {
         const [tipo, aN, bN] = decision;
         const a = jugadores.find(j => j.nombre === aN && j.vivo);
@@ -163,15 +157,14 @@ async function continuarPartida(channel) {
 
   const ganador = jugadores.find(j => j.vivo);
 
-  // 💰 RECOMPENSAS
   if (!db.players[ganador.nombre]) {
     db.players[ganador.nombre] = { wins: 0, kills: 0, partidas: 0, dinero: 0 };
   }
 
   db.players[ganador.nombre].wins++;
   db.players[ganador.nombre].dinero += 100;
-
   db.global.partidasJugadas++;
+
   guardarDB(db);
 
   await channel.send(`🏆 Ganador: ${ganador.nombre} (+100 monedas)`);
@@ -180,9 +173,11 @@ async function continuarPartida(channel) {
   guardarMemory(mem);
 }
 
-// ================= INICIO =================
+// ================= INICIAR =================
 async function iniciarPartida(ctx) {
   const miembros = await ctx.guild.members.fetch();
+
+  const personalidades = ["agresivo", "cobarde", "estratega", "traidor"];
 
   let jugadores = miembros
     .filter(m => !m.user.bot)
@@ -204,37 +199,73 @@ async function iniciarPartida(ctx) {
 
   guardarMemory(mem);
 
-  ctx.reply("🎮 Partida iniciada con IA avanzada...");
+  await responder(ctx, "🎮 Partida iniciada...");
   continuarPartida(ctx.channel);
 }
 
-// ================= EVENTOS =================
+// ================= SLASH =================
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand()) return;
+
+  await i.deferReply();
+
+  if (i.commandName === "hambre") iniciarPartida(i);
+  if (i.commandName === "calamar") iniciarPartida(i);
+
+  if (i.commandName === "balance") {
+    const db = cargarDB();
+    const user = db.players[i.user.username];
+    await responder(i, `💰 Dinero: ${user?.dinero || 0}`);
+  }
+});
+
+// ================= PREFIX =================
+client.on(Events.MessageCreate, async (msg) => {
+  if (msg.author.bot) return;
+
+  const args = msg.content.split(" ");
+  const cmd = args[0];
+
+  if (cmd === "!hambre") iniciarPartida(msg);
+  if (cmd === "!calamar") iniciarPartida(msg);
+
+  if (cmd === "!balance") {
+    const db = cargarDB();
+    const user = db.players[msg.author.username];
+    msg.reply(`💰 Dinero: ${user?.dinero || 0}`);
+  }
+
+  if (cmd === "!ritual") {
+    const db = cargarDB();
+    db.global.eventosDesbloqueados.push("ente_techo");
+    guardarDB(db);
+    msg.reply("🌑 Has invocado algo...");
+  }
+});
+
+// ================= READY =================
 client.once(Events.ClientReady, async () => {
-  console.log("🔥 Patroclo IA avanzada activo");
+  console.log("🔥 Patroclo FULL activo");
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+  const commands = [
+    new SlashCommandBuilder().setName('hambre').setDescription('Iniciar juego'),
+    new SlashCommandBuilder().setName('calamar').setDescription('Modo calamar'),
+    new SlashCommandBuilder().setName('balance').setDescription('Ver dinero')
+  ].map(c => c.toJSON());
+
+  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 
   const mem = cargarMemory();
-
-  if (mem.partidaActiva) {
+  if (mem.partidaActiva && mem.canalId) {
     const ch = await client.channels.fetch(mem.canalId);
     if (ch) continuarPartida(ch);
   }
 });
 
-client.on(Events.MessageCreate, async (msg) => {
-  if (msg.author.bot) return;
-
-  if (msg.content === "!hambre") iniciarPartida(msg);
-
-  if (msg.content === "!balance") {
-    const db = cargarDB();
-    const user = db.players[msg.author.username];
-    msg.reply(`💰 Dinero: ${user?.dinero || 0}`);
-  }
-});
-
 client.login(process.env.DISCORD_TOKEN);
 
-// ================= SERVER =================
 http.createServer((req, res) => {
-  res.end("Patroclo IA avanzada activo");
+  res.end("Bot activo");
 }).listen(process.env.PORT || 8080);
