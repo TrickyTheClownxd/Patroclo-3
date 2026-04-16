@@ -61,7 +61,7 @@ function guardarMemory(mem) {
 async function narrarEvento(texto, mem) {
   try {
     const contexto = mem.historial.slice(-5).join(" | ");
-    const prompt = `Historia: ${contexto}. Evento: ${texto}. Narración brutal, oscura y corta.`;
+    const prompt = `Historia previa: ${contexto}. Evento: ${texto}. Narración corta, brutal y cinematográfica.`;
     const result = await model.generateContent(prompt);
     return result.response.text();
   } catch {
@@ -72,10 +72,10 @@ async function narrarEvento(texto, mem) {
 async function decidirEvento(jugadores) {
   try {
     const vivos = jugadores.filter(j => j.vivo);
-    const lista = vivos.map(j => `${j.nombre}(${j.personalidad}/${j.rol})`).join(", ");
+    const lista = vivos.map(j => `${j.nombre}(${j.rol}/${j.personalidad})`).join(", ");
 
-    const prompt = `Jugadores: ${lista}
-Elegí:
+    const prompt = `Jugadores vivos: ${lista}
+Elegí SOLO uno:
 ataque|A|B
 accidente|A|-
 traicion|A|B`;
@@ -93,9 +93,10 @@ traicion|A|B`;
     });
 
     const data = await res.json();
-    return data.choices[0].message.content.trim().split("|");
+    return data.choices?.[0]?.message?.content?.trim().split("|");
 
-  } catch {
+  } catch (e) {
+    console.log("⚠️ Groq fallo");
     return null;
   }
 }
@@ -154,18 +155,20 @@ async function continuarPartida(channel) {
 
     guardarMemory(mem);
 
-    const embed = new EmbedBuilder()
-      .setTitle(`🔥 RONDA ${mem.ronda}`)
-      .setDescription(eventos.join("\n\n"));
+    // 🔥 RONDA
+    await channel.send({
+      embeds: [new EmbedBuilder()
+        .setTitle(`🔥 RONDA ${mem.ronda}`)
+        .setDescription(eventos.join("\n\n"))]
+    });
 
-    await channel.send({ embeds: [embed] });
-
-    // 📺 MODO STREAM (intermedio)
+    // 📺 INTERMEDIO
     await new Promise(r => setTimeout(r, 30000));
-    await channel.send("📺 Intermedio... recapitulando muertes...");
 
-    const resumen = mem.historial.slice(-3).join("\n");
-    await channel.send(`💀 Últimos eventos:\n${resumen}`);
+    await channel.send("📺 Intermedio...");
+
+    const resumen = mem.historial.slice(-5).join("\n");
+    await channel.send(`💀 Recap:\n${resumen}`);
 
     await new Promise(r => setTimeout(r, 30000));
 
@@ -175,14 +178,12 @@ async function continuarPartida(channel) {
 
   const ganador = jugadores.find(j => j.vivo);
 
-  // 💰 recompensas + apuestas
-  db.apuestas = db.apuestas || {};
-
+  // 💰 Apuestas
   for (const user in db.apuestas) {
-    const apuesta = db.apuestas[user];
-    if (apuesta.objetivo === ganador.nombre) {
+    const ap = db.apuestas[user];
+    if (ap.objetivo === ganador.nombre) {
       if (!db.players[user]) db.players[user] = { dinero: 0 };
-      db.players[user].dinero += apuesta.monto * 2;
+      db.players[user].dinero += ap.monto * 2;
     }
   }
 
@@ -195,9 +196,11 @@ async function continuarPartida(channel) {
   db.players[ganador.nombre].wins++;
   db.players[ganador.nombre].dinero += 100;
 
+  db.global.partidasJugadas++;
+
   guardarDB(db);
 
-  await channel.send(`🏆 Ganador: ${ganador.nombre}`);
+  await channel.send(`🏆 Ganador: ${ganador.nombre} (+100 monedas)`);
 
   mem.partidaActiva = false;
   guardarMemory(mem);
@@ -236,7 +239,7 @@ async function iniciarPartida(ctx) {
   setTimeout(() => continuarPartida(ctx.channel), 1000);
 }
 
-// ================= SLASH =================
+// ================= COMANDOS =================
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
 
@@ -248,11 +251,10 @@ client.on(Events.InteractionCreate, async (i) => {
   if (i.commandName === "balance") {
     const db = cargarDB();
     const user = db.players[i.user.username];
-    await responder(i, `💰 Dinero: ${user?.dinero || 0}`);
+    await responder(i, `💰 ${user?.dinero || 0}`);
   }
 });
 
-// ================= PREFIX =================
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
@@ -265,7 +267,7 @@ client.on(Events.MessageCreate, async (msg) => {
   if (cmd === "!balance") {
     const db = cargarDB();
     const user = db.players[msg.author.username];
-    msg.reply(`💰 Dinero: ${user?.dinero || 0}`);
+    msg.reply(`💰 ${user?.dinero || 0}`);
   }
 
   if (cmd === "!apostar") {
@@ -276,18 +278,17 @@ client.on(Events.MessageCreate, async (msg) => {
     db.apuestas[msg.author.username] = { objetivo, monto };
     guardarDB(db);
 
-    msg.reply("💰 Apuesta registrada");
+    msg.reply("💰 Apuesta hecha");
   }
 
   if (cmd === "!estado") {
-    const mem = cargarMemory();
-    msg.reply("```json\n" + JSON.stringify(mem, null, 2) + "\n```");
+    msg.reply("```json\n" + JSON.stringify(cargarMemory(), null, 2) + "\n```");
   }
 });
 
 // ================= READY =================
 client.once(Events.ClientReady, async () => {
-  console.log("🔥 Patroclo DIOS activo");
+  console.log("🔥 Patroclo FULL DEFINITIVO activo");
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
@@ -297,11 +298,12 @@ client.once(Events.ClientReady, async () => {
     new SlashCommandBuilder().setName('balance').setDescription('Ver dinero')
   ].map(c => c.toJSON());
 
-  await rest.put(
-    Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
-    { body: commands }
-  );
+  // GLOBAL (todos los servers)
+  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 
+  console.log("🌍 Comandos globales listos");
+
+  // Reanudar partida
   const mem = cargarMemory();
   if (mem.partidaActiva && mem.canalId) {
     const ch = await client.channels.fetch(mem.canalId);
