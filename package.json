@@ -1,11 +1,10 @@
 {
-  "name": "discord-bot-juegos",
-  "version": "2.0.0",
-  "description": "Patroclo 3 - Simulación IA avanzada",
+  "name": "patroclo-3",
+  "version": "3.0.0",
+  "description": "Simulador IA Juegos del Hambre/Calamar",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "deploy-commands": "node deploy-commands.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.15.3",
