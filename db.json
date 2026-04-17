@@ -4,5 +4,6 @@
     "eventosDesbloqueados": [],
     "partidasJugadas": 0
   },
-  "apuestas": {}
+  "apuestas": {},
+  "historialJugadores": {}
 }
