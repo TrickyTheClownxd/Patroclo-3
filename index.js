@@ -1,14 +1,14 @@
-const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 require('dotenv').config();
 const fs = require("fs");
 const http = require("http");
 
-// ================= CONFIG =================
+// ===== IA =====
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// ================= CLIENT =================
+// ===== CLIENT =====
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -18,284 +18,349 @@ const client = new Client({
   ]
 });
 
-// ================= MEMORY =================
-function cargarMemory() {
+// ===== MEMORY =====
+function loadMemory() {
   if (!fs.existsSync("memory.json")) {
     fs.writeFileSync("memory.json", JSON.stringify({
       partidaActiva: false,
       pausado: false,
       modo: "hambre",
-      temporada: null,
       jugadores: [],
       ronda: 0,
       historial: [],
-      acciones: {},
-      canalId: null
+      kills: {},
+      muertosTotales: 0
     }, null, 2));
   }
   return JSON.parse(fs.readFileSync("memory.json"));
 }
 
-function guardarMemory(mem) {
+function saveMemory(mem) {
   fs.writeFileSync("memory.json", JSON.stringify(mem, null, 2));
 }
 
-// ================= IA =================
-async function narrarEvento(texto) {
+// ===== IA NARRADOR =====
+async function narrar(txt) {
   try {
-    if (!process.env.GEMINI_API_KEY) return texto;
-    const prompt = `Narrador de reality show oscuro. Evento: ${texto}. Corto, tenso y cinematográfico.`;
-    const result = await model.generateContent(prompt);
-    return result.response.text();
+    if (!process.env.GEMINI_API_KEY) return txt;
+    const r = await model.generateContent(`Narrador oscuro estilo serie: ${txt}`);
+    return r.response.text();
   } catch {
-    return texto;
+    return txt;
   }
 }
 
-// ================= EVENTOS HAMBRE =================
-function eventoHambre(a, b, mem) {
+// ===== LOOT =====
+function asignarLoot(jugadores) {
+  const items = ["cuchillo","agua","comida","linterna","botiquín","cuerda","arco"];
+
+  jugadores.forEach(j=>{
+    j.item = Math.random()<0.5 ? items[Math.floor(Math.random()*items.length)] : null;
+    j.escondido = false;
+    j.cooldown = 0;
+  });
+
+  return jugadores;
+}
+
+// ===== KILL =====
+function matar(j, mem, killer=null) {
+  if (!j.vivo) return;
+  j.vivo = false;
+  mem.muertosTotales++;
+
+  if (killer) {
+    if (!mem.kills[killer.id]) mem.kills[killer.id] = 0;
+    mem.kills[killer.id]++;
+  }
+}
+
+// ===== ATAQUE =====
+function calcularAtaque(j) {
+  let base = 0.5;
+  if (j.item==="cuchillo") base+=0.4;
+  if (j.item==="arco") base+=0.3;
+  if (j.item==="cuerda") base+=0.2;
+  return base;
+}
+
+// ===== EVENTOS HAMBRE =====
+function eventoHambre(vivos, ronda, mem) {
+
+  const pick = () => vivos[Math.floor(Math.random()*vivos.length)];
+  const a = pick();
+  let b = pick(), c = pick(), d = pick();
+
+  if (b.id===a.id) b=pick();
+  if (c.id===a.id||c.id===b.id) c=pick();
+  if (d.id===a.id||d.id===b.id||d.id===c.id) d=pick();
+
+  let probMuerte = Math.min(0.9, 0.25 + ronda * 0.12);
 
   const eventos = [
-    { texto: "{user1} y {user2} intentan un pacto desesperado… pero fracasan y quedan fuera.", kill: "both" },
-    { texto: "{user1} prepara una trampa para {user2}, pero se vuelve en su contra.", kill: "self" },
-    { texto: "{user1} no soporta el frío de la noche y abandona.", kill: "self" },
-    { texto: "{user1} embosca a {user2} con una piedra y lo elimina.", kill: "other" },
-    { texto: "{user1} roba provisiones de {user2}, pero es descubierto y eliminado.", kill: "self" },
-    { texto: "{user1} se esconde en la oscuridad, pero {user2} lo encuentra y lo elimina.", kill: "self" },
-    { texto: "{user1} y {user2} discuten por comida… la tensión termina con ambos fuera.", kill: "both" },
-    { texto: "{user1} cae en una trampa natural y queda eliminado.", kill: "self" },
-    { texto: "{user1} intenta atacar a {user2}, pero falla y queda fuera.", kill: "self" },
-    { texto: "{user1} se queda sin fuerzas y abandona el desafío.", kill: "self" },
-    { texto: "{user1} y {user2} forman una alianza temporal… que pronto se rompe.", kill: "none" },
-    { texto: "{user1} se pierde en el bosque y no regresa.", kill: "self" },
-    { texto: "{user1} embosca a {user2} durante la noche y lo elimina.", kill: "other" },
-    { texto: "{user1} intenta construir refugio, pero fracasa y queda fuera.", kill: "self" },
-    { texto: "{user1} y {user2} se enfrentan en un duelo improvisado… solo uno sobrevive.", kill: "random" },
-    { texto: "{user1} se arriesga demasiado y queda eliminado.", kill: "self" },
-    { texto: "{user1} se confía demasiado y {user2} lo sorprende.", kill: "self" },
-    { texto: "{user1} se sacrifica para salvar a {user2}, pero ambos quedan fuera.", kill: "both" },
-    { texto: "{user1} encuentra un recurso valioso, pero {user2} lo arrebata y lo elimina.", kill: "self" },
-    { texto: "{user1} y {user2} se enfrentan en la última ronda… el juego decide su destino.", kill: "random" }
+    { t: "{a} construye una fogata.", k: [] },
+    { t: "{a} y {b} se acurrucan para sobrevivir.", k: [] },
+    { t: "{a} y {b} se dan la mano.", k: [] },
+    { t: "{a} escapa de la cornucopia.", k: [] },
+    { t: "Los jugadores dejan la cornucopia vacía.", k: [] },
+
+    { t: "{a} intenta un plan arriesgado contra {b}, pero falla y muere.", k:["a"] },
+    { t: "{a} muere de frío.", k:["a"] },
+    { t: "{a} mata brutalmente a {b} con una piedra.", k:["b"] },
+    { t: "{a} roba provisiones de {b}, pero es descubierto y muere.", k:["a"] },
+    { t: "{a} se esconde en la oscuridad, pero {b} lo encuentra y lo mata.", k:["a"] },
+    { t: "{a} y {b} discuten por comida… ambos mueren.", k:["a","b"] },
+    { t: "{a} cae en una trampa natural y muere.", k:["a"] },
+    { t: "{a} intenta atacar a {b}, pero falla y muere.", k:["a"] },
+    { t: "{a} se queda sin fuerzas y muere.", k:["a"] },
+    { t: "{a} y {b} forman una alianza temporal… que pronto se rompe con sangre.", k:[] },
+    { t: "{a} se pierde en el bosque y muere.", k:["a"] },
+    { t: "{a} embosca a {b} durante la noche y lo mata.", k:["b"] },
+    { t: "{a} intenta construir refugio, pero fracasa y muere.", k:["a"] },
+    { t: "{a} y {b} se enfrentan… solo uno sobrevive.", k:["random_ab"] },
+    { t: "{a} se arriesga demasiado y muere.", k:["a"] },
+    { t: "{a} se confía demasiado y {b} lo mata.", k:["b"] },
+    { t: "{a} se sacrifica para salvar a {b}, pero ambos mueren.", k:["a","b"] },
+    { t: "{a} encuentra un recurso valioso, pero {b} lo mata.", k:["b"] },
+    { t: "{a} y {b} se enfrentan en la última ronda… alguien muere.", k:["random_ab"] },
+
+    { t: "{a} cae de un árbol sobre {b}… ambos mueren.", k:["a","b"] },
+    { t: "{a} encuentra una bomba, esta falla y explota.", k:["a"] },
+    { t: "{a} pierde el control y detona una bomba que elimina a varios.", k:["a","b","c","d"], rare:true },
+    { t: "{a} cae en un pozo y muere.", k:["a"] },
+    { t: "{a} dispara a {b}, pero mata a {c}.", k:["c"] }
   ];
 
-  // evento especial en rondas altas
-  if (mem.ronda >= 5 && Math.random() < 0.3) {
-    const especiales = [
-      "{user1} encuentra un recurso raro que cambia el juego.",
-      "{user1} activa un evento inesperado que altera la arena.",
-      "{user1} aprovecha el caos para escapar momentáneamente."
-    ];
-    return especiales[Math.floor(Math.random()*especiales.length)]
-      .replaceAll("{user1}", `<@${a.id}>`);
-  }
+  let pool = eventos.filter(e => !(e.rare && ronda < 4));
+  const ev = pool[Math.floor(Math.random()*pool.length)];
 
-  const evento = eventos[Math.floor(Math.random() * eventos.length)];
+  let texto = ev.t
+    .replaceAll("{a}", `<@${a.id}>`)
+    .replaceAll("{b}", `<@${b.id}>`)
+    .replaceAll("{c}", `<@${c.id}>`)
+    .replaceAll("{d}", `<@${d.id}>`);
 
-  let texto = evento.texto
-    .replaceAll("{user1}", `<@${a.id}>`)
-    .replaceAll("{user2}", `<@${b.id}>`);
+  ev.k.forEach(k => {
+    let target=null, killer=null;
 
-  switch (evento.kill) {
-    case "self": a.vivo = false; break;
-    case "other": b.vivo = false; break;
-    case "both": a.vivo = false; b.vivo = false; break;
-    case "random": Math.random() < 0.5 ? a.vivo = false : b.vivo = false; break;
-  }
+    if(k==="a") target=a;
+    if(k==="b"){ target=b; killer=a; }
+    if(k==="c") target=c;
+    if(k==="d") target=d;
+    if(k==="random_ab"){
+      Math.random()<0.5 ? (target=a, killer=b) : (target=b, killer=a);
+    }
+
+    if(!target) return;
+    if(target.escondido && Math.random()<0.6) return;
+
+    if(Math.random()<probMuerte){
+      matar(target, mem, killer);
+    }
+  });
 
   return texto;
 }
 
-// ================= CALAMAR =================
-function pruebaCalamar(mem, jugadores) {
-  const vivos = jugadores.filter(j => j.vivo);
+// ===== CALAMAR =====
+function eventoCalamar(mem) {
 
-  if (mem.ronda === 1) {
-    const elim = vivos.filter(() => Math.random() < 0.3);
-    elim.forEach(j => j.vivo = false);
-    return `🔴 Luz roja... ${elim.map(j=>`<@${j.id}>`).join(", ")} fallaron`;
+  const vivos = mem.jugadores.filter(j=>j.vivo);
+  if (vivos.length <= 1) return "🦑 Fin";
+
+  let texto = "";
+  let eliminados = [];
+
+  switch(mem.ronda) {
+    case 1:
+      eliminados = vivos.filter(()=>Math.random()<0.3);
+      texto = "🔴🟢 Luz roja, luz verde...";
+      break;
+
+    case 2:
+      eliminados = vivos.filter(()=>Math.random()<0.35);
+      texto = "🍪 Juego del panal...";
+      break;
+
+    case 3:
+      eliminados = vivos.filter(()=>Math.random()<0.4);
+      texto = "🪢 Tira y afloja...";
+      break;
+
+    case 4:
+      for (let i=0;i<vivos.length;i+=2){
+        if(vivos[i+1]){
+          eliminados.push(Math.random()<0.5 ? vivos[i] : vivos[i+1]);
+        }
+      }
+      texto = "🎲 Canicas...";
+      break;
+
+    case 5:
+      eliminados = vivos.filter(()=>Math.random()<0.5);
+      texto = "🌉 Puente de cristal...";
+      break;
+
+    default:
+      if(vivos.length>1){
+        eliminados=[vivos[Math.floor(Math.random()*vivos.length)]];
+        texto="🦑 Batalla final...";
+      }
+      break;
   }
 
-  if (mem.ronda === 2) {
-    const elim = vivos.filter(() => Math.random() < 0.4);
-    elim.forEach(j => j.vivo = false);
-    return `🍪 Fallaron la galleta: ${elim.map(j=>`<@${j.id}>`).join(", ")}`;
-  }
+  eliminados.forEach(j=>matar(j,mem));
 
-  if (mem.ronda === 3) {
-    const mitad = Math.floor(vivos.length/2);
-    const elim = vivos.slice(0, mitad);
-    elim.forEach(j => j.vivo = false);
-    return `🪢 Equipo eliminado: ${elim.map(j=>`<@${j.id}>`).join(", ")}`;
-  }
-
-  if (mem.ronda === 4) {
-    const elim = vivos.filter(() => Math.random() < 0.5);
-    elim.forEach(j => j.vivo = false);
-    return `🎲 Pierden: ${elim.map(j=>`<@${j.id}>`).join(", ")}`;
-  }
-
-  if (mem.ronda === 5) {
-    const elim = vivos.filter(() => Math.random() < 0.6);
-    elim.forEach(j => j.vivo = false);
-    return `🌉 Caen: ${elim.map(j=>`<@${j.id}>`).join(", ")}`;
-  }
-
-  return `🦑 Final entre sobrevivientes`;
+  return `${texto}\n💀 Eliminados: ${eliminados.map(j=>`<@${j.id}>`).join(", ") || "Nadie"}`;
 }
 
-// ================= MOTOR =================
-async function continuarPartida(channel) {
-  let mem = cargarMemory();
+// ===== LOOP =====
+async function loop(channel) {
 
-  while (mem.partidaActiva && mem.jugadores.filter(j => j.vivo).length > 1) {
+  let mem = loadMemory();
 
-    mem = cargarMemory();
+  while (mem.partidaActiva && mem.jugadores.filter(j=>j.vivo).length > 1) {
 
-    if (mem.pausado) {
-      await new Promise(r => setTimeout(r, 3000));
-      continue;
-    }
+    mem = loadMemory();
+    if (mem.pausado) { await new Promise(r=>setTimeout(r,3000)); continue; }
 
-    const vivos = mem.jugadores.filter(j => j.vivo);
-    const a = vivos[Math.floor(Math.random()*vivos.length)];
-    const b = vivos.find(j => j.id !== a.id);
+    const vivos = mem.jugadores.filter(j=>j.vivo);
 
-    let texto;
-
-    if (mem.modo === "calamar") {
-      texto = pruebaCalamar(mem, mem.jugadores);
-    } else {
-      texto = eventoHambre(a, b, mem);
-    }
-
-    // acciones
-    if (mem.acciones[a.id] === "atacar" && b?.vivo) {
-      b.vivo = false;
-      texto = `⚔️ <@${a.id}> ejecuta un ataque`;
-    }
-
-    if (mem.acciones[a.id] === "esconder") {
-      texto = `🌿 <@${a.id}> se oculta`;
-    }
+    let texto = mem.modo === "calamar"
+      ? eventoCalamar(mem)
+      : eventoHambre(vivos, mem.ronda, mem);
 
     mem.historial.push(texto);
-    guardarMemory(mem);
 
-    const narracion = await narrarEvento(texto);
+    mem.jugadores.forEach(j=>{
+      if(j.escondido && Math.random()<0.5) j.escondido=false;
+      if(j.cooldown>0) j.cooldown--;
+    });
 
-    await channel.send({ embeds: [new EmbedBuilder().setTitle(`🔥 RONDA ${mem.ronda}`).setDescription(narracion)] });
+    saveMemory(mem);
 
-    await new Promise(r => setTimeout(r, 5000));
+    const narrado = await narrar(texto);
 
-    await channel.send({ embeds: [new EmbedBuilder().setTitle("📊 RESUMEN").setDescription(mem.historial.slice(-3).join("\n"))] });
+    await channel.send({
+      embeds:[new EmbedBuilder()
+        .setTitle(`🔥 RONDA ${mem.ronda}`)
+        .setDescription(narrado)]
+    });
 
-    await new Promise(r => setTimeout(r, 5000));
+    const muertos = mem.jugadores.filter(j=>!j.vivo).map(j=>`<@${j.id}>`);
+    if (muertos.length>0) {
+      await channel.send(`💀 Muertos (${mem.muertosTotales}):\n${muertos.join(", ")}`);
+    }
+
+    await new Promise(r=>setTimeout(r,5000));
 
     mem.ronda++;
-    mem.acciones = {};
-    guardarMemory(mem);
+    saveMemory(mem);
   }
 
-  const ganador = mem.jugadores.find(j => j.vivo);
-  if (ganador) await channel.send(`🏆 <@${ganador.id}> ganó la partida`);
+  const ganador = mem.jugadores.find(j=>j.vivo);
+  if (ganador) channel.send(`🏆 <@${ganador.id}> ganó`);
 
-  mem.partidaActiva = false;
-  guardarMemory(mem);
+  mem.partidaActiva=false;
+  saveMemory(mem);
 }
 
-// ================= INICIO =================
-async function iniciarPartida(ctx, modo = "hambre", temporada = null) {
-  let mem = cargarMemory();
+// ===== START =====
+async function start(msg, modo="hambre") {
+  let mem = loadMemory();
+  if (mem.partidaActiva) return msg.reply("⚠️ Ya hay partida");
 
-  if (mem.partidaActiva) return ctx.reply("⚠️ Ya hay partida activa");
+  const miembros = await msg.guild.members.fetch();
+  let jugadores = miembros.filter(m=>!m.user.bot)
+    .map(m=>({id:m.user.id,vivo:true}));
 
-  const miembros = await ctx.guild.members.fetch();
+  jugadores = asignarLoot(jugadores);
 
-  const jugadores = miembros.filter(m => !m.user.bot).map(m => ({ id: m.user.id, vivo: true }));
+  mem.partidaActiva=true;
+  mem.modo=modo;
+  mem.jugadores=jugadores;
+  mem.ronda=1;
+  mem.historial=[];
+  mem.kills={};
+  mem.muertosTotales=0;
+  mem.pausado=false;
 
-  if (jugadores.length < 2) return ctx.reply("❌ No hay suficientes jugadores");
+  saveMemory(mem);
 
-  mem.partidaActiva = true;
-  mem.modo = modo;
-  mem.temporada = temporada;
-  mem.jugadores = jugadores;
-  mem.ronda = 1;
-  mem.historial = [];
-  mem.acciones = {};
-  mem.canalId = ctx.channel.id;
-  mem.pausado = false;
-
-  guardarMemory(mem);
-
-  await ctx.reply(`🎮 Iniciando ${modo}`);
-
-  setTimeout(() => continuarPartida(ctx.channel), 2000);
+  msg.reply(`🎮 Comienza ${modo}`);
+  setTimeout(()=>loop(msg.channel),2000);
 }
 
-// ================= MENSAJES =================
-client.on(Events.MessageCreate, async (msg) => {
+// ===== COMANDOS =====
+client.on(Events.MessageCreate, async msg => {
   if (msg.author.bot) return;
 
-  const cmd = msg.content.toLowerCase();
+  const c = msg.content.toLowerCase();
+  let mem = loadMemory();
 
-  if (cmd === "!hambre") return iniciarPartida(msg, "hambre");
+  if (c==="!hambre") start(msg,"hambre");
+  if (c==="!calamar") start(msg,"calamar");
 
-  if (cmd.startsWith("!calamar")) return iniciarPartida(msg, "calamar");
+  if (c.startsWith("!atacar")) {
+    if (!mem.partidaActiva) return msg.reply("❌ No hay partida");
 
-  if (cmd === "!atacar") {
-    let mem = cargarMemory();
-    mem.acciones[msg.author.id] = "atacar";
-    guardarMemory(mem);
-    return msg.reply("⚔️ Ataque listo");
+    const atacante = mem.jugadores.find(j=>j.id===msg.author.id);
+    const objetivo = msg.mentions.users.first();
+
+    if (!atacante || !atacante.vivo) return msg.reply("💀 Estás muerto");
+    if (!objetivo) return msg.reply("❌ Menciona objetivo");
+    if (atacante.cooldown>0) return msg.reply("⏳ Espera");
+
+    const target = mem.jugadores.find(j=>j.id===objetivo.id);
+    if (!target || !target.vivo) return msg.reply("❌ Inválido");
+
+    let prob = calcularAtaque(atacante);
+    if (target.escondido) prob -= 0.3;
+
+    if (Math.random()<prob) {
+      matar(target, mem, atacante);
+      msg.reply(`⚔️ Eliminaste a <@${target.id}>`);
+    } else {
+      if (Math.random()<0.5) {
+        matar(atacante, mem, target);
+        msg.reply("💀 Fallaste y moriste");
+      } else {
+        msg.reply("⚠️ Fallaste");
+      }
+    }
+
+    atacante.cooldown = 2;
+    saveMemory(mem);
   }
 
-  if (cmd === "!esconder") {
-    let mem = cargarMemory();
-    mem.acciones[msg.author.id] = "esconder";
-    guardarMemory(mem);
-    return msg.reply("🌿 Escondido");
+  if (c==="!esconderse") {
+    const j = mem.jugadores.find(x=>x.id===msg.author.id);
+    if (!j || !j.vivo) return msg.reply("💀 No podés");
+
+    j.escondido = true;
+    j.cooldown = 2;
+    saveMemory(mem);
+
+    msg.reply("🫥 Te escondiste");
   }
 
-  if (cmd === "!pausa") {
-    let mem = cargarMemory();
-    mem.pausado = true;
-    guardarMemory(mem);
-    return msg.reply("⏸️ Pausado");
+  if (c==="!inventario") {
+    const j = mem.jugadores.find(x=>x.id===msg.author.id);
+    if (!j) return msg.reply("❌ No estás");
+
+    msg.reply(`🎒 ${j.item || "Nada"}`);
   }
 
-  if (cmd === "!reanudar") {
-    let mem = cargarMemory();
-    mem.pausado = false;
-    guardarMemory(mem);
-    return msg.reply("▶️ Reanudado");
-  }
-
-  if (cmd === "!parar") {
-    let mem = cargarMemory();
-    mem.partidaActiva = false;
-    guardarMemory(mem);
-    return msg.reply("⛔ Finalizado");
-  }
+  if (c==="!pausa"){ mem.pausado=true; saveMemory(mem); msg.reply("⏸️"); }
+  if (c==="!reanudar"){ mem.pausado=false; saveMemory(mem); msg.reply("▶️"); }
+  if (c==="!parar"){ mem.partidaActiva=false; saveMemory(mem); msg.reply("⛔"); }
 });
 
-// ================= READY =================
-client.once(Events.ClientReady, async () => {
-  console.log("🔥 Patroclo PRO activo");
-
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
-  const commands = [
-    new SlashCommandBuilder().setName('hambre').setDescription('Modo hambre'),
-    new SlashCommandBuilder().setName('calamar').setDescription('Modo calamar')
-  ].map(c => c.toJSON());
-
-  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-
-  console.log("🌍 Slash listos");
+// ===== READY =====
+client.once(Events.ClientReady, () => {
+  console.log("🔥 Patroclo FINAL COMPLETO activo");
 });
 
 client.login(process.env.DISCORD_TOKEN);
 
-http.createServer((req, res) => {
-  res.end("Bot activo");
-}).listen(process.env.PORT || 8080);
+http.createServer((req,res)=>res.end("OK")).listen(process.env.PORT || 8080);
