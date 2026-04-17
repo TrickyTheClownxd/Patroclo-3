@@ -24,33 +24,15 @@ async function responder(ctx, contenido) {
   if (ctx.reply) return ctx.reply(contenido);
 }
 
-// ================= DB =================
+// ================= FILES =================
 function cargarDB() {
-  if (!fs.existsSync("db.json")) {
-    fs.writeFileSync("db.json", JSON.stringify({
-      players: {},
-      global: { eventosDesbloqueados: [], partidasJugadas: 0 },
-      apuestas: {}
-    }, null, 2));
-  }
   return JSON.parse(fs.readFileSync("db.json"));
 }
 function guardarDB(db) {
   fs.writeFileSync("db.json", JSON.stringify(db, null, 2));
 }
 
-// ================= MEMORY =================
 function cargarMemory() {
-  if (!fs.existsSync("memory.json")) {
-    fs.writeFileSync("memory.json", JSON.stringify({
-      partidaActiva: false,
-      jugadores: [],
-      ronda: 0,
-      historial: [],
-      traiciones: [],
-      canalId: null
-    }, null, 2));
-  }
   return JSON.parse(fs.readFileSync("memory.json"));
 }
 function guardarMemory(mem) {
@@ -60,8 +42,15 @@ function guardarMemory(mem) {
 // ================= IA =================
 async function narrarEvento(texto, mem) {
   try {
-    const contexto = mem.historial.slice(-5).join(" | ");
-    const prompt = `Historia previa: ${contexto}. Evento: ${texto}. Narración corta, brutal y cinematográfica.`;
+    const intensidad = mem.ronda > 5 ? "muy intenso" : "tenso";
+
+    const prompt = `
+Modo narrador de streaming.
+Tono: ${intensidad}
+Evento: ${texto}
+Narralo corto y épico.
+`;
+
     const result = await model.generateContent(prompt);
     return result.response.text();
   } catch {
@@ -72,13 +61,25 @@ async function narrarEvento(texto, mem) {
 async function decidirEvento(jugadores) {
   try {
     const vivos = jugadores.filter(j => j.vivo);
-    const lista = vivos.map(j => `${j.nombre}(${j.rol}/${j.personalidad})`).join(", ");
 
-    const prompt = `Jugadores vivos: ${lista}
-Elegí SOLO uno:
+    const db = cargarDB();
+
+    const memoria = vivos.map(j => {
+      const hist = db.historialJugadores[j.id] || [];
+      return `${j.id}: ${hist.slice(-3).join(",")}`;
+    }).join(" | ");
+
+    const lista = vivos.map(j => j.id).join(", ");
+
+    const prompt = `
+Jugadores: ${lista}
+Memoria: ${memoria}
+
+Elegí:
 ataque|A|B
 accidente|A|-
-traicion|A|B`;
+traicion|A|B
+`;
 
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -93,114 +94,114 @@ traicion|A|B`;
     });
 
     const data = await res.json();
-    return data.choices?.[0]?.message?.content?.trim().split("|");
-
-  } catch (e) {
-    console.log("⚠️ Groq fallo");
+    return data.choices?.[0]?.message?.content?.split("|");
+  } catch {
     return null;
   }
 }
 
-// ================= ROLES =================
-const roles = ["traidor", "cazador", "superviviente", "neutral"];
-const personalidades = ["agresivo", "cobarde", "estratega"];
+// ================= HISTORIAL =================
+function registrarEventoJugador(id, evento) {
+  const db = cargarDB();
+
+  if (!db.historialJugadores[id]) {
+    db.historialJugadores[id] = [];
+  }
+
+  db.historialJugadores[id].push(evento);
+
+  if (db.historialJugadores[id].length > 10) {
+    db.historialJugadores[id].shift();
+  }
+
+  guardarDB(db);
+}
 
 // ================= MOTOR =================
 async function continuarPartida(channel) {
   console.log("🧠 Simulación iniciada");
 
-  let db = cargarDB();
   let mem = cargarMemory();
   let jugadores = mem.jugadores;
 
   while (jugadores.filter(j => j.vivo).length > 1) {
-    console.log("⚔️ Ronda", mem.ronda);
+
+    mem = cargarMemory();
+
+    if (mem.pausado) {
+      await new Promise(r => setTimeout(r, 5000));
+      continue;
+    }
+
+    await channel.send(["🎙️ La tensión aumenta...", "🔥 Nadie está a salvo..."][Math.floor(Math.random()*2)]);
 
     let eventos = [];
 
     for (let i = 0; i < 2; i++) {
+
       const decision = await decidirEvento(jugadores);
+
+      if (!decision) continue;
+
+      const [tipo, aID, bID] = decision;
+
+      const a = jugadores.find(j => j.id === aID && j.vivo);
+      const b = jugadores.find(j => j.id === bID && j.vivo);
 
       let texto = "";
 
-      if (decision) {
-        const [tipo, aN, bN] = decision;
-        const a = jugadores.find(j => j.nombre === aN && j.vivo);
-        const b = jugadores.find(j => j.nombre === bN && j.vivo);
+      if (tipo === "ataque" && a && b) {
+        b.vivo = false;
+        texto = `<@${a.id}> elimina a <@${b.id}>`;
+        registrarEventoJugador(a.id, "mató a alguien");
+        registrarEventoJugador(b.id, "murió");
+      }
 
-        if (tipo === "ataque" && a && b) {
-          b.vivo = false;
-          a.kills++;
-          texto = `${a.nombre} elimina a ${b.nombre}`;
-        }
+      if (tipo === "accidente" && a) {
+        a.vivo = false;
+        texto = `<@${a.id}> muere por accidente`;
+        registrarEventoJugador(a.id, "murió solo");
+      }
 
-        if (tipo === "accidente" && a) {
-          a.vivo = false;
-          texto = `${a.nombre} muere por accidente`;
-        }
-
-        if (tipo === "traicion" && a && b) {
-          b.vivo = false;
-          a.kills++;
-          mem.traiciones.push(`${a.nombre} traicionó a ${b.nombre}`);
-          texto = `${a.nombre} traiciona a ${b.nombre}`;
-        }
+      if (tipo === "traicion" && a && b) {
+        b.vivo = false;
+        texto = `<@${a.id}> traiciona a <@${b.id}>`;
       }
 
       if (!texto) continue;
 
-      mem.historial.push(`R${mem.ronda}: ${texto}`);
+      mem.historial.push(texto);
       eventos.push(await narrarEvento(texto, mem));
     }
 
     guardarMemory(mem);
 
-    // 🔥 RONDA
     await channel.send({
       embeds: [new EmbedBuilder()
         .setTitle(`🔥 RONDA ${mem.ronda}`)
         .setDescription(eventos.join("\n\n"))]
     });
 
-    // 📺 INTERMEDIO
-    await new Promise(r => setTimeout(r, 30000));
+    // EVENTO LOCO
+    if (Math.random() < 0.25) {
+      const vivos = jugadores.filter(j => j.vivo);
+      const victima = vivos[Math.floor(Math.random()*vivos.length)];
+      victima.vivo = false;
 
-    await channel.send("📺 Intermedio...");
+      await channel.send(`⚠️ EVENTO GLOBAL eliminó a <@${victima.id}>`);
+      registrarEventoJugador(victima.id, "murió por evento");
+    }
 
-    const resumen = mem.historial.slice(-5).join("\n");
-    await channel.send(`💀 Recap:\n${resumen}`);
-
-    await new Promise(r => setTimeout(r, 30000));
+    await new Promise(r => setTimeout(r, 60000));
 
     mem.ronda++;
+    mem.acciones = {};
     guardarMemory(mem);
   }
 
   const ganador = jugadores.find(j => j.vivo);
 
-  // 💰 Apuestas
-  for (const user in db.apuestas) {
-    const ap = db.apuestas[user];
-    if (ap.objetivo === ganador.nombre) {
-      if (!db.players[user]) db.players[user] = { dinero: 0 };
-      db.players[user].dinero += ap.monto * 2;
-    }
-  }
-
-  db.apuestas = {};
-
-  if (!db.players[ganador.nombre]) {
-    db.players[ganador.nombre] = { wins: 0, dinero: 0 };
-  }
-
-  db.players[ganador.nombre].wins++;
-  db.players[ganador.nombre].dinero += 100;
-
-  db.global.partidasJugadas++;
-
-  guardarDB(db);
-
-  await channel.send(`🏆 Ganador: ${ganador.nombre} (+100 monedas)`);
+  await channel.send(`🏆 <@${ganador.id}> ha ganado el juego`);
 
   mem.partidaActiva = false;
   guardarMemory(mem);
@@ -219,66 +220,55 @@ async function iniciarPartida(ctx) {
   let jugadores = miembros
     .filter(m => !m.user.bot)
     .map(m => ({
-      nombre: m.user.username,
-      vivo: true,
-      kills: 0,
-      rol: roles[Math.floor(Math.random() * roles.length)],
-      personalidad: personalidades[Math.floor(Math.random() * personalidades.length)]
+      id: m.user.id,
+      vivo: true
     }));
+
+  if (jugadores.length < 4) {
+    return responder(ctx, "❌ Se necesitan mínimo 4 jugadores");
+  }
 
   mem.partidaActiva = true;
   mem.jugadores = jugadores;
   mem.ronda = 1;
   mem.historial = [];
-  mem.traiciones = [];
   mem.canalId = ctx.channel.id;
+  mem.pausado = false;
 
   guardarMemory(mem);
 
-  await responder(ctx, "🎮 Partida iniciada...");
+  await responder(ctx, "🎮 Partida iniciada");
   setTimeout(() => continuarPartida(ctx.channel), 1000);
 }
 
 // ================= COMANDOS =================
-client.on(Events.InteractionCreate, async (i) => {
-  if (!i.isChatInputCommand()) return;
-
-  await i.deferReply();
-
-  if (i.commandName === "hambre") iniciarPartida(i);
-  if (i.commandName === "calamar") iniciarPartida(i);
-
-  if (i.commandName === "balance") {
-    const db = cargarDB();
-    const user = db.players[i.user.username];
-    await responder(i, `💰 ${user?.dinero || 0}`);
-  }
-});
-
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
   const args = msg.content.split(" ");
   const cmd = args[0];
 
-  if (cmd === "!hambre") iniciarPartida(msg);
-  if (cmd === "!calamar") iniciarPartida(msg);
+  if (cmd === "!inicio") iniciarPartida(msg);
 
-  if (cmd === "!balance") {
-    const db = cargarDB();
-    const user = db.players[msg.author.username];
-    msg.reply(`💰 ${user?.dinero || 0}`);
+  if (cmd === "!pausa") {
+    let mem = cargarMemory();
+    mem.pausado = true;
+    guardarMemory(mem);
+    msg.reply("⏸️ Pausado");
   }
 
-  if (cmd === "!apostar") {
-    const objetivo = args[1];
-    const monto = parseInt(args[2]);
+  if (cmd === "!reanudar") {
+    let mem = cargarMemory();
+    mem.pausado = false;
+    guardarMemory(mem);
+    msg.reply("▶️ Reanudado");
+  }
 
-    const db = cargarDB();
-    db.apuestas[msg.author.username] = { objetivo, monto };
-    guardarDB(db);
-
-    msg.reply("💰 Apuesta hecha");
+  if (cmd === "!parar") {
+    let mem = cargarMemory();
+    mem.partidaActiva = false;
+    guardarMemory(mem);
+    msg.reply("⛔ Finalizado");
   }
 
   if (cmd === "!estado") {
@@ -288,31 +278,22 @@ client.on(Events.MessageCreate, async (msg) => {
 
 // ================= READY =================
 client.once(Events.ClientReady, async () => {
-  console.log("🔥 Patroclo FULL DEFINITIVO activo");
+  console.log("🔥 Patroclo FINAL activo");
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   const commands = [
     new SlashCommandBuilder().setName('hambre').setDescription('Iniciar juego'),
-    new SlashCommandBuilder().setName('calamar').setDescription('Modo calamar'),
-    new SlashCommandBuilder().setName('balance').setDescription('Ver dinero')
+    new SlashCommandBuilder().setName('calamar').setDescription('Modo calamar')
   ].map(c => c.toJSON());
 
-  // GLOBAL (todos los servers)
   await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 
-  console.log("🌍 Comandos globales listos");
-
-  // Reanudar partida
-  const mem = cargarMemory();
-  if (mem.partidaActiva && mem.canalId) {
-    const ch = await client.channels.fetch(mem.canalId);
-    if (ch) continuarPartida(ch);
-  }
+  console.log("🌍 Slash commands listos");
 });
 
 client.login(process.env.DISCORD_TOKEN);
 
 http.createServer((req, res) => {
-  res.end("Patroclo activo");
+  res.end("Bot activo");
 }).listen(process.env.PORT || 8080);
