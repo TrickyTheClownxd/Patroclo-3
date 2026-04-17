@@ -1,8 +1,10 @@
 {
   "partidaActiva": false,
+  "pausado": false,
   "jugadores": [],
   "ronda": 0,
   "historial": [],
   "traiciones": [],
+  "acciones": {},
   "canalId": null
 }
