@@ -5,9 +5,8 @@ const fs = require("fs");
 const http = require("http");
 
 // ================= CONFIG =================
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const client = new Client({
   intents: [
@@ -18,103 +17,38 @@ const client = new Client({
   ]
 });
 
-// ================= HELPERS =================
-async function responder(ctx, contenido) {
-  if (ctx.editReply) return ctx.editReply(contenido);
-  if (ctx.reply) return ctx.reply(contenido);
-}
-
 // ================= FILES =================
-function cargarDB() {
-  return JSON.parse(fs.readFileSync("db.json"));
-}
-function guardarDB(db) {
-  fs.writeFileSync("db.json", JSON.stringify(db, null, 2));
-}
-
 function cargarMemory() {
+  if (!fs.existsSync("memory.json")) {
+    fs.writeFileSync("memory.json", JSON.stringify({
+      partidaActiva: false,
+      pausado: false,
+      jugadores: [],
+      ronda: 0,
+      historial: [],
+      canalId: null
+    }, null, 2));
+  }
   return JSON.parse(fs.readFileSync("memory.json"));
 }
+
 function guardarMemory(mem) {
   fs.writeFileSync("memory.json", JSON.stringify(mem, null, 2));
 }
 
 // ================= IA =================
-async function narrarEvento(texto, mem) {
+async function narrarEvento(texto) {
   try {
-    const intensidad = mem.ronda > 5 ? "muy intenso" : "tenso";
+    if (!process.env.GEMINI_API_KEY) return texto;
 
-    const prompt = `
-Modo narrador de streaming.
-Tono: ${intensidad}
-Evento: ${texto}
-Narralo corto y épico.
-`;
+    const result = await model.generateContent(
+      `Narrá esto como un evento brutal de supervivencia: ${texto}`
+    );
 
-    const result = await model.generateContent(prompt);
     return result.response.text();
   } catch {
     return texto;
   }
-}
-
-async function decidirEvento(jugadores) {
-  try {
-    const vivos = jugadores.filter(j => j.vivo);
-
-    const db = cargarDB();
-
-    const memoria = vivos.map(j => {
-      const hist = db.historialJugadores[j.id] || [];
-      return `${j.id}: ${hist.slice(-3).join(",")}`;
-    }).join(" | ");
-
-    const lista = vivos.map(j => j.id).join(", ");
-
-    const prompt = `
-Jugadores: ${lista}
-Memoria: ${memoria}
-
-Elegí:
-ataque|A|B
-accidente|A|-
-traicion|A|B
-`;
-
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama3-70b-8192",
-        messages: [{ role: "user", content: prompt }]
-      })
-    });
-
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content?.split("|");
-  } catch {
-    return null;
-  }
-}
-
-// ================= HISTORIAL =================
-function registrarEventoJugador(id, evento) {
-  const db = cargarDB();
-
-  if (!db.historialJugadores[id]) {
-    db.historialJugadores[id] = [];
-  }
-
-  db.historialJugadores[id].push(evento);
-
-  if (db.historialJugadores[id].length > 10) {
-    db.historialJugadores[id].shift();
-  }
-
-  guardarDB(db);
 }
 
 // ================= MOTOR =================
@@ -122,163 +56,165 @@ async function continuarPartida(channel) {
   console.log("🧠 Simulación iniciada");
 
   let mem = cargarMemory();
-  let jugadores = mem.jugadores;
 
-  while (jugadores.filter(j => j.vivo).length > 1) {
+  while (mem.partidaActiva && mem.jugadores.filter(j => j.vivo).length > 1) {
 
     mem = cargarMemory();
 
     if (mem.pausado) {
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, 3000));
       continue;
     }
 
-    await channel.send(["🎙️ La tensión aumenta...", "🔥 Nadie está a salvo..."][Math.floor(Math.random()*2)]);
+    console.log("⚔️ Nueva ronda");
 
-    let eventos = [];
+    const vivos = mem.jugadores.filter(j => j.vivo);
 
-    for (let i = 0; i < 2; i++) {
+    const a = vivos[Math.floor(Math.random() * vivos.length)];
+    const b = vivos.find(j => j.id !== a.id);
 
-      const decision = await decidirEvento(jugadores);
+    if (!a || !b) break;
 
-      if (!decision) continue;
+    b.vivo = false;
 
-      const [tipo, aID, bID] = decision;
-
-      const a = jugadores.find(j => j.id === aID && j.vivo);
-      const b = jugadores.find(j => j.id === bID && j.vivo);
-
-      let texto = "";
-
-      if (tipo === "ataque" && a && b) {
-        b.vivo = false;
-        texto = `<@${a.id}> elimina a <@${b.id}>`;
-        registrarEventoJugador(a.id, "mató a alguien");
-        registrarEventoJugador(b.id, "murió");
-      }
-
-      if (tipo === "accidente" && a) {
-        a.vivo = false;
-        texto = `<@${a.id}> muere por accidente`;
-        registrarEventoJugador(a.id, "murió solo");
-      }
-
-      if (tipo === "traicion" && a && b) {
-        b.vivo = false;
-        texto = `<@${a.id}> traiciona a <@${b.id}>`;
-      }
-
-      if (!texto) continue;
-
-      mem.historial.push(texto);
-      eventos.push(await narrarEvento(texto, mem));
-    }
+    const texto = `<@${a.id}> eliminó a <@${b.id}>`;
+    mem.historial.push(texto);
 
     guardarMemory(mem);
 
+    const narracion = await narrarEvento(texto);
+
     await channel.send({
-      embeds: [new EmbedBuilder()
-        .setTitle(`🔥 RONDA ${mem.ronda}`)
-        .setDescription(eventos.join("\n\n"))]
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(`🔥 RONDA ${mem.ronda}`)
+          .setDescription(narracion)
+      ]
     });
 
-    // EVENTO LOCO
-    if (Math.random() < 0.25) {
-      const vivos = jugadores.filter(j => j.vivo);
-      const victima = vivos[Math.floor(Math.random()*vivos.length)];
-      victima.vivo = false;
-
-      await channel.send(`⚠️ EVENTO GLOBAL eliminó a <@${victima.id}>`);
-      registrarEventoJugador(victima.id, "murió por evento");
-    }
-
-    await new Promise(r => setTimeout(r, 60000));
+    await new Promise(r => setTimeout(r, 10000));
 
     mem.ronda++;
-    mem.acciones = {};
     guardarMemory(mem);
   }
 
-  const ganador = jugadores.find(j => j.vivo);
+  const ganador = mem.jugadores.find(j => j.vivo);
 
-  await channel.send(`🏆 <@${ganador.id}> ha ganado el juego`);
+  if (ganador) {
+    await channel.send(`🏆 <@${ganador.id}> ganó la partida`);
+  }
 
   mem.partidaActiva = false;
   guardarMemory(mem);
 }
 
-// ================= INICIAR =================
+// ================= INICIO =================
 async function iniciarPartida(ctx) {
-  let mem = cargarMemory();
+  try {
+    console.log("🟢 iniciarPartida ejecutado");
 
-  if (mem.partidaActiva) {
-    return responder(ctx, "⚠️ Ya hay una partida en curso.");
+    let mem = cargarMemory();
+
+    if (mem.partidaActiva) {
+      return ctx.reply("⚠️ Ya hay partida activa");
+    }
+
+    const miembros = await ctx.guild.members.fetch();
+
+    const jugadores = miembros
+      .filter(m => !m.user.bot)
+      .map(m => ({
+        id: m.user.id,
+        vivo: true
+      }));
+
+    if (jugadores.length < 2) {
+      return ctx.reply("❌ No hay suficientes jugadores");
+    }
+
+    mem.partidaActiva = true;
+    mem.jugadores = jugadores;
+    mem.ronda = 1;
+    mem.historial = [];
+    mem.canalId = ctx.channel.id;
+    mem.pausado = false;
+
+    guardarMemory(mem);
+
+    await ctx.reply("🎮 Partida iniciada");
+
+    setTimeout(() => continuarPartida(ctx.channel), 2000);
+
+  } catch (err) {
+    console.error("❌ ERROR iniciarPartida:", err);
+    ctx.reply("❌ Error al iniciar");
   }
-
-  const miembros = await ctx.guild.members.fetch();
-
-  let jugadores = miembros
-    .filter(m => !m.user.bot)
-    .map(m => ({
-      id: m.user.id,
-      vivo: true
-    }));
-
-  if (jugadores.length < 4) {
-    return responder(ctx, "❌ Se necesitan mínimo 4 jugadores");
-  }
-
-  mem.partidaActiva = true;
-  mem.jugadores = jugadores;
-  mem.ronda = 1;
-  mem.historial = [];
-  mem.canalId = ctx.channel.id;
-  mem.pausado = false;
-
-  guardarMemory(mem);
-
-  await responder(ctx, "🎮 Partida iniciada");
-  setTimeout(() => continuarPartida(ctx.channel), 1000);
 }
 
-// ================= COMANDOS =================
+// ================= MENSAJES =================
 client.on(Events.MessageCreate, async (msg) => {
+  console.log("📩 Mensaje:", msg.content);
+
   if (msg.author.bot) return;
 
-  const args = msg.content.split(" ");
-  const cmd = args[0];
+  const cmd = msg.content.toLowerCase();
 
-  if (cmd === "!inicio") iniciarPartida(msg);
+  try {
 
-  if (cmd === "!pausa") {
-    let mem = cargarMemory();
-    mem.pausado = true;
-    guardarMemory(mem);
-    msg.reply("⏸️ Pausado");
+    if (cmd === "!hambre" || cmd === "!calamar") {
+      console.log("🔥 comando detectado");
+      return iniciarPartida(msg);
+    }
+
+    if (cmd === "!pausa") {
+      let mem = cargarMemory();
+      mem.pausado = true;
+      guardarMemory(mem);
+      return msg.reply("⏸️ Pausado");
+    }
+
+    if (cmd === "!reanudar") {
+      let mem = cargarMemory();
+      mem.pausado = false;
+      guardarMemory(mem);
+      return msg.reply("▶️ Reanudado");
+    }
+
+    if (cmd === "!parar") {
+      let mem = cargarMemory();
+      mem.partidaActiva = false;
+      guardarMemory(mem);
+      return msg.reply("⛔ Finalizado");
+    }
+
+    if (cmd === "!ping") {
+      return msg.reply("🏓 Pong!");
+    }
+
+  } catch (err) {
+    console.error("❌ ERROR comando:", err);
   }
+});
 
-  if (cmd === "!reanudar") {
-    let mem = cargarMemory();
-    mem.pausado = false;
-    guardarMemory(mem);
-    msg.reply("▶️ Reanudado");
-  }
+// ================= SLASH =================
+client.on(Events.InteractionCreate, async (i) => {
+  if (!i.isChatInputCommand()) return;
 
-  if (cmd === "!parar") {
-    let mem = cargarMemory();
-    mem.partidaActiva = false;
-    guardarMemory(mem);
-    msg.reply("⛔ Finalizado");
-  }
+  try {
+    await i.deferReply();
 
-  if (cmd === "!estado") {
-    msg.reply("```json\n" + JSON.stringify(cargarMemory(), null, 2) + "\n```");
+    if (i.commandName === "hambre" || i.commandName === "calamar") {
+      return iniciarPartida(i);
+    }
+
+  } catch (err) {
+    console.error("❌ ERROR slash:", err);
   }
 });
 
 // ================= READY =================
 client.once(Events.ClientReady, async () => {
-  console.log("🔥 Patroclo FINAL activo");
+  console.log(`✅ Bot listo: ${client.user.tag}`);
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
@@ -289,11 +225,13 @@ client.once(Events.ClientReady, async () => {
 
   await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 
-  console.log("🌍 Slash commands listos");
+  console.log("🌍 Slash commands OK");
 });
 
+// ================= LOGIN =================
 client.login(process.env.DISCORD_TOKEN);
 
+// ================= SERVER =================
 http.createServer((req, res) => {
   res.end("Bot activo");
 }).listen(process.env.PORT || 8080);
