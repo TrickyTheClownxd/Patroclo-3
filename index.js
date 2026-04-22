@@ -1,12 +1,7 @@
 const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 require('dotenv').config();
 const fs = require("fs");
 const http = require("http");
-
-// ===== IA =====
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // ===== CLIENT =====
 const client = new Client({
@@ -35,35 +30,16 @@ function loadMemory() {
   return JSON.parse(fs.readFileSync("memory.json"));
 }
 
-function saveMemory(mem) {
+function saveMemory(mem){
   fs.writeFileSync("memory.json", JSON.stringify(mem,null,2));
 }
 
-// ===== IA =====
-async function narrar(txt){
-  try{
-    if(!process.env.GEMINI_API_KEY) return txt;
-    const r = await model.generateContent(`Narrador oscuro brutal: ${txt}`);
-    return r.response.text();
-  }catch{
-    return txt;
-  }
-}
-
-// ===== LOOT =====
-function asignarLoot(jugadores){
-  const items=["cuchillo","agua","comida","linterna","botiquín","cuerda","arco"];
-  jugadores.forEach(j=>{
-    j.item=Math.random()<0.5?items[Math.floor(Math.random()*items.length)]:null;
-    j.escondido=false;
-    j.cooldown=0;
-  });
-  return jugadores;
-}
+// ===== UTIL =====
+const pick = arr => arr[Math.floor(Math.random()*arr.length)];
 
 // ===== KILL =====
 function matar(j, mem, killer=null){
-  if(!j.vivo) return;
+  if(!j || !j.vivo) return;
   j.vivo=false;
   mem.muertosTotales++;
 
@@ -73,118 +49,161 @@ function matar(j, mem, killer=null){
   }
 }
 
-// ===== ATAQUE =====
-function calcularAtaque(j){
-  let base=0.5;
-  if(j.item==="cuchillo") base+=0.4;
-  if(j.item==="arco") base+=0.3;
-  if(j.item==="cuerda") base+=0.2;
-  return base;
+// ===== LOOT =====
+function asignarLoot(jugadores){
+  const items=["cuchillo","agua","comida","linterna","botiquín","cuerda","arco"];
+
+  jugadores.forEach(j=>{
+    j.item=Math.random()<0.5?pick(items):null;
+    j.escondido=false;
+    j.cooldown=0;
+  });
+
+  return jugadores;
 }
 
-// ===== EVENTOS HAMBRE (FULL) =====
+// ===== EVENTOS HAMBRE (100% COMPLETO) =====
 function eventoHambre(vivos, ronda, mem){
 
-  const pick=()=>vivos[Math.floor(Math.random()*vivos.length)];
-  const a=pick();
-  let b=pick(),c=pick(),d=pick();
+  const a=pick(vivos);
+  const b=pick(vivos);
+  const c=pick(vivos);
+  const d=pick(vivos);
 
-  if(b.id===a.id) b=pick();
-  if(c.id===a.id||c.id===b.id) c=pick();
-  if(d.id===a.id||d.id===b.id||d.id===c.id) d=pick();
+  const eventos = [
 
-  let probMuerte=Math.min(0.9,0.25+ronda*0.12);
-
-  const eventos=[
-
-    // 🧊 SOCIALES
+    // 🧊 SOCIALES / NEUTROS
     {t:"{a} construye una fogata.",k:[]},
     {t:"{a} y {b} se acurrucan para sobrevivir.",k:[]},
-    {t:"{a} y {b} se dan la mano.",k:[]},
-    {t:"{a} escapa de la cornucopia.",k:[]},
-    {t:"Los jugadores dejan la cornucopia vacía y sin recursos.",k:[]},
+    {t:"{a} encuentra agua fresca y recupera fuerzas.",k:[]},
+    {t:"{a} logra encender una fogata y espantar el frío.",k:[]},
+    {t:"{a} descubre un sendero oculto que lo mantiene a salvo.",k:[]},
+    {t:"{a} encuentra un escondite seguro.",k:[]},
+    {t:"{a} construye un refugio improvisado y sobrevive la noche.",k:[]},
+    {t:"{a} encuentra frutas silvestres y se alimenta.",k:[]},
+    {t:"{a} se esconde en silencio y evita ser descubierto.",k:[]},
+    {t:"{a} encuentra un recurso valioso y lo guarda.",k:[]},
 
-    // 💀 MUERTES / BRUTAL
-    {t:"{a} y {b} intentan suicidarse… fallan y mueren.",k:["a","b"]},
-    {t:"{a} se suicida.",k:["a"]},
-    {t:"{a} mata brutalmente a {b} con una piedra.",k:["b"]},
-    {t:"{a} intenta matar a {b}, falla y muere.",k:["a"]},
+    // 💚 POSITIVOS
+    {t:"{a} ayuda a {b} a levantarse tras una caída.",k:[]},
+    {t:"{a} comparte comida con {b}.",k:[]},
+    {t:"{a} encuentra un amuleto misterioso.",k:[]},
+    {t:"{a} y {b} ríen juntos en medio del caos.",k:[]},
+    {t:"{a} descubre un escondite seguro y descansa.",k:[]},
+    {t:"{a} recibe apoyo inesperado de {b}.",k:[]},
+    {t:"{a} encuentra un río cristalino.",k:[]},
+    {t:"{a} y {b} recuerdan viejos tiempos.",k:[]},
+    {t:"{a} siente una extraña calma.",k:[]},
+    {t:"{a} y {b} sobreviven una tormenta juntos.",k:[]},
+    {t:"{a} y {b} tienen un encuentro íntimo durante la noche.",k:[]},
+
+    // 💀 MUERTES
+    {t:"{a} intenta un plan arriesgado contra {b}, pero falla y muere.",k:["a"]},
     {t:"{a} muere de frío.",k:["a"]},
-    {t:"{a} roba provisiones de {b}, es descubierto y muere.",k:["a"]},
-    {t:"{a} se esconde… pero {b} lo encuentra y lo mata.",k:["a"]},
-    {t:"{a} y {b} discuten… ambos mueren.",k:["a","b"]},
+    {t:"{a} muere de hambre lentamente.",k:["a"]},
+    {t:"{a} cae en un pozo y muere.",k:["a"]},
     {t:"{a} cae en una trampa natural y muere.",k:["a"]},
-    {t:"{a} intenta atacar a {b}, falla y muere.",k:["a"]},
-    {t:"{a} se queda sin fuerzas y muere.",k:["a"]},
-    {t:"{a} forma alianza con {b}… luego lo traiciona y lo mata.",k:["b"]},
-    {t:"{a} se pierde en el bosque y muere.",k:["a"]},
-    {t:"{a} embosca a {b} en la noche y lo mata.",k:["b"]},
-    {t:"{a} intenta construir refugio… muere.",k:["a"]},
-    {t:"{a} y {b} se enfrentan… uno muere.",k:["random_ab"]},
-    {t:"{a} se arriesga demasiado y muere.",k:["a"]},
-    {t:"{a} se confía… {b} lo mata.",k:["a"]},
-    {t:"{a} se sacrifica por {b}… ambos mueren.",k:["a","b"]},
-    {t:"{a} encuentra recurso… {b} lo mata.",k:["a"]},
+    {t:"{a} cae de un árbol y muere.",k:["a"]},
+    {t:"{a} es picado por una serpiente y muere de disentería.",k:["a"]},
+    {t:"{a} muere de disentería.",k:["a"]},
+    {t:"{a} se ahoga en un río y muere.",k:["a"]},
+    {t:"{a} se intoxica con frutos venenosos y muere.",k:["a"]},
+
+    // ⚔️ COMBATE
+    {t:"{a} mata brutalmente a {b} con una piedra.",k:["b"]},
+    {t:"{a} asesina a {b} mientras duerme.",k:["b"]},
+    {t:"{a} apuñala a {b} hasta matarlo.",k:["b"]},
+    {t:"{a} ataca a {b}, falla y muere.",k:["a"]},
+    {t:"{a} se confía y {b} lo mata.",k:["a"]},
+    {t:"{a} envenena la comida de {b}, pero se equivoca y muere.",k:["a"]},
+
+    // 🧠 TRAICIÓN
+    {t:"{a} traiciona a {b} y lo mata.",k:["b"]},
+    {t:"{a} finge alianza con {b} y luego lo mata.",k:["b"]},
+    {t:"{a} y {b} discuten por comida… ambos mueren.",k:["a","b"]},
+
+    // 💀 SUICIDIOS
+    {t:"{a} no soporta la presión y se suicida.",k:["a"]},
+    {t:"{a} pierde la cordura y se suicida.",k:["a"]},
+    {t:"{a} y {b} intentan suicidarse juntos y mueren.",k:["a","b"]},
+    {t:"{a} y {b} amenazan con doble suicidio, fallan y mueren.",k:["a","b"]},
 
     // 💥 CAOS
-    {t:"{a} cae de un árbol sobre {b}… ambos mueren.",k:["a","b"]},
-    {t:"{a} encuentra una bomba… explota y muere.",k:["a"]},
-    {t:"{a} detona bomba y elimina a varios.",k:["a","b","c","d"],rare:true},
-    {t:"{a} cae en un pozo y muere.",k:["a"]},
-    {t:"{a} dispara a {b}, pero mata a {c}.",k:["c"]}
+    {t:"{a} encuentra una bomba, esta falla y explota.",k:["a"]},
+    {t:"{a} pierde el control y detona una bomba que mata a varios.",k:["a","b","c","d"],rare:true},
+    {t:"{a} dispara una flecha hacia {b}, pero falla y golpea a {c}, que muere.",k:["c"]},
+    {t:"{a} se sube a un árbol pero cae sobre {b} y mueren.",k:["a","b"]},
+    {t:"{a} provoca un incendio en el bosque y muere atrapado.",k:["a"]},
+    {t:"{a} pisa una mina oculta y muere.",k:["a"]},
+
+    // 🎲 MIX
+    {t:"{a} y {b} discuten y ambos mueren.",k:["a","b"]},
+    {t:"{a} se sacrifica por {b} y ambos mueren.",k:["a","b"]},
+    {t:"{a} y {b} se enfrentan y solo uno sobrevive.",k:["random_ab"]}
   ];
 
-  let pool=eventos.filter(e=>!(e.rare && ronda<4));
-  const ev=pool[Math.floor(Math.random()*pool.length)];
+  const ev = pick(eventos);
 
-  let texto=ev.t
+  let texto = ev.t
     .replaceAll("{a}",`<@${a.id}>`)
     .replaceAll("{b}",`<@${b.id}>`)
     .replaceAll("{c}",`<@${c.id}>`)
     .replaceAll("{d}",`<@${d.id}>`);
 
   ev.k.forEach(k=>{
-    let target=null, killer=null;
+    if(k==="a") matar(a,mem);
+    if(k==="b") matar(b,mem,a);
+    if(k==="c") matar(c,mem);
+    if(k==="d") matar(d,mem);
 
-    if(k==="a") target=a;
-    if(k==="b"){target=b; killer=a;}
-    if(k==="c") target=c;
-    if(k==="d") target=d;
     if(k==="random_ab"){
-      Math.random()<0.5?(target=a,killer=b):(target=b,killer=a);
-    }
-
-    if(!target) return;
-    if(target.escondido && Math.random()<0.6) return;
-
-    if(Math.random()<probMuerte){
-      matar(target,mem,killer);
+      Math.random()<0.5 ? matar(a,mem,b) : matar(b,mem,a);
     }
   });
 
   return texto;
 }
 
-// ===== CALAMAR FIX =====
+// ===== CALAMAR COMPLETO =====
 function eventoCalamar(mem){
-  const vivos=mem.jugadores.filter(j=>j.vivo);
+  const vivos = mem.jugadores.filter(j=>j.vivo);
+  if(vivos.length<=1) return "🦑 Fin";
 
-  if(vivos.length===2){
-    const [a,b]=vivos;
-    if(Math.random()<0.5){matar(b,mem); return `<@${a.id}> gana el final`;}
-    else{matar(a,mem); return `<@${b.id}> gana el final`;}
-  }
+  const a=pick(vivos);
+  const b=pick(vivos);
 
-  let eliminados=vivos.filter(()=>Math.random()<0.4);
+  const eventos = [
+    {t:"🔴🟢 Luz roja, luz verde… varios caen.",k:["random_group"]},
+    {t:"🍪 Juego del panal… algunos mueren.",k:["random_group"]},
+    {t:"🪢 Tira y afloja… caen al vacío.",k:["random_group"]},
+    {t:"🎲 Canicas… pierden y mueren.",k:["random_group"]},
+    {t:"🌉 Puente… caen y mueren.",k:["random_group"]},
 
-  if(eliminados.length===0){
-    const forced=vivos[Math.floor(Math.random()*vivos.length)];
-    matar(forced,mem);
-    return `⚠️ <@${forced.id}> eliminado`;
-  }
+    // descanso
+    {t:"{a} ataca a {b} mientras duerme.",k:["b"]},
+    {t:"{a} roba comida y {b} lo descubre… pelea mortal.",k:["b"]},
+    {t:"Se apagan las luces… el caos deja muertos.",k:["random_group"]},
+    {t:"{a} elimina a {b}.",k:["b"]},
+    {t:"{a} traiciona a {b}.",k:["b"]}
+  ];
 
-  eliminados.forEach(j=>matar(j,mem));
-  return `🦑 Eliminados: ${eliminados.map(j=>`<@${j.id}>`).join(", ")}`;
+  const ev = pick(eventos);
+
+  let texto = ev.t
+    .replaceAll("{a}",`<@${a.id}>`)
+    .replaceAll("{b}",`<@${b.id}>`);
+
+  ev.k.forEach(k=>{
+    if(k==="b") matar(b,mem,a);
+
+    if(k==="random_group"){
+      vivos.forEach(j=>{
+        if(Math.random()<0.4) matar(j,mem);
+      });
+    }
+  });
+
+  return texto;
 }
 
 // ===== LOOP =====
@@ -194,7 +213,10 @@ async function loop(channel){
   while(mem.partidaActiva && mem.jugadores.filter(j=>j.vivo).length>1){
 
     mem=loadMemory();
-    if(mem.pausado){ await new Promise(r=>setTimeout(r,3000)); continue; }
+    if(mem.pausado){
+      await new Promise(r=>setTimeout(r,3000));
+      continue;
+    }
 
     const vivos=mem.jugadores.filter(j=>j.vivo);
 
@@ -203,15 +225,12 @@ async function loop(channel){
       : eventoHambre(vivos,mem.ronda,mem);
 
     mem.historial.push(texto);
-
     saveMemory(mem);
-
-    const narrado=await narrar(texto);
 
     await channel.send({
       embeds:[new EmbedBuilder()
         .setTitle(`🔥 RONDA ${mem.ronda}`)
-        .setDescription(narrado)]
+        .setDescription(texto)]
     });
 
     await new Promise(r=>setTimeout(r,4000));
@@ -233,7 +252,8 @@ async function start(msg,modo="hambre"){
   if(mem.partidaActiva) return msg.reply("⚠️ Ya hay partida");
 
   const miembros=await msg.guild.members.fetch();
-  let jugadores=miembros.filter(m=>!m.user.bot).map(m=>({id:m.user.id,vivo:true}));
+  let jugadores=miembros.filter(m=>!m.user.bot)
+    .map(m=>({id:m.user.id,vivo:true}));
 
   jugadores=asignarLoot(jugadores);
 
@@ -268,7 +288,9 @@ client.on(Events.MessageCreate, async msg=>{
 });
 
 // ===== READY =====
-client.once(Events.ClientReady,()=>console.log("🔥 FULL SIN RECORTES activo"));
+client.once(Events.ClientReady,()=>{
+  console.log("🔥 100% EVENTOS ACTIVO");
+});
 
 client.login(process.env.DISCORD_TOKEN);
 
