@@ -2,8 +2,14 @@
   "players": {},
   "global": {
     "eventosDesbloqueados": [],
-    "partidasJugadas": 0
+    "partidasJugadas": 0,
+    "killsTotales": 0
   },
   "apuestas": {},
-  "historialJugadores": {}
+  "historialJugadores": {},
+  "tienda": {
+    "cuchillo": { "precio": 2 },
+    "arco": { "precio": 3 },
+    "botiquin": { "precio": 2 }
+  }
 }
