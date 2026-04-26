@@ -31,7 +31,7 @@ async function narrar(txt){
     const r = await axios.post("https://api.groq.com/openai/v1/chat/completions",{
       model:"llama3-70b-8192",
       messages:[
-        {role:"system",content:"Narrador dramático argentino"},
+        {role:"system",content:"Narrador dramático estilo streamer argentino"},
         {role:"user",content:txt}
       ]
     },{
@@ -55,57 +55,68 @@ function matar(j, mem, killer=null){
   j.vivo = false;
   mem.muertosTotales++;
 
+  let db = loadDB();
+
   if(killer){
     if(!mem.kills[killer.id]) mem.kills[killer.id]=0;
     mem.kills[killer.id]++;
 
+    if(!db.players[killer.id]){
+      db.players[killer.id] = { kills:0, wins:0 };
+    }
+
+    db.players[killer.id].kills++;
+    db.global.killsTotales++;
+
     if(mem.bounties.includes(j.id)){
       mem.kills[killer.id]+=2;
+      db.players[killer.id].kills+=2;
     }
   }
+
+  saveDB(db);
 }
 
 function asignarDistritos(jugadores){
-  let d = 1;
+  let d=1;
   for(let i=0;i<jugadores.length;i+=2){
-    jugadores[i].distrito = d;
-    if(jugadores[i+1]) jugadores[i+1].distrito = d;
+    jugadores[i].distrito=d;
+    if(jugadores[i+1]) jugadores[i+1].distrito=d;
     d++;
   }
 }
 
 function toggleDia(mem){
-  mem.esDeDia = !mem.esDeDia;
-  return mem.esDeDia ? "☀️ Día" : "🌙 Noche";
+  mem.esDeDia=!mem.esDeDia;
+  return mem.esDeDia?"☀️ Día":"🌙 Noche";
 }
 
 function cambiarClima(mem){
-  const climas = ["☀️ Normal","🌧️ Lluvia","🌫️ Niebla","❄️ Frío"];
-  mem.clima = pick(climas);
+  const climas=["☀️ Normal","🌧️ Lluvia","🌫️ Niebla","❄️ Frío"];
+  mem.clima=pick(climas);
   return mem.clima;
 }
 
 function calcularProb(a,t,mem){
-  let prob = 0.4;
+  let prob=0.4;
 
   if(a.item==="cuchillo") prob=0.7;
   if(a.item==="arco") prob=0.6;
 
-  if(a.herido) prob -= 0.2;
-  if(t.herido) prob += 0.2;
+  if(a.herido) prob-=0.2;
+  if(t.herido) prob+=0.2;
 
-  if(t.escondido) prob -= 0.3;
-
-  if(a.distrito === t.distrito) prob -= 0.25;
+  if(t.escondido) prob-=0.3;
+  if(a.distrito===t.distrito) prob-=0.25;
 
   if(mem.alianzas.find(x =>
     (x.a===a.id && x.b===t.id)||(x.a===t.id && x.b===a.id)
-  )) prob -= 0.5;
+  )) prob-=0.5;
 
-  if(!mem.esDeDia) prob += 0.1;
+  if(!mem.esDeDia) prob+=0.1;
 
-  if(mem.clima.includes("Niebla")) prob -= 0.15;
-  if(mem.clima.includes("Frío")) prob -= 0.1;
+  if(mem.clima.includes("Niebla")) prob-=0.15;
+  if(mem.clima.includes("Frío")) prob-=0.1;
 
   return prob;
 }
@@ -141,6 +152,9 @@ function eventoHambre(mem){
     if(k==="b") matar(b,mem,a);
     if(k==="c") matar(c,mem,a);
     if(k==="d") matar(d,mem,a);
+    if(k==="random_ab"){
+      Math.random()<0.5 ? matar(a,mem,b) : matar(b,mem,a);
+    }
   });
 
   return txt;
@@ -171,10 +185,9 @@ function eventoCalamar(mem){
 // ===== LOOP =====
 async function loop(channel){
   let mem = loadMemory();
-  let db = loadDB();
 
   for(let i=0;i<mem.jugadores.length;i++){
-    await channel.send("🏁 " + eventoCornucopia(mem));
+    await channel.send("🏁 "+eventoCornucopia(mem));
     await sleep(1200);
   }
 
@@ -208,6 +221,7 @@ async function loop(channel){
     }
 
     mem.ronda++;
+
     mem.jugadores.forEach(j=>{
       if(j.cooldown>0) j.cooldown--;
       j.escondido=false;
@@ -218,6 +232,16 @@ async function loop(channel){
   }
 
   const ganador = mem.jugadores.find(j=>j.vivo);
+  let db = loadDB();
+
+  if(ganador){
+    if(!db.players[ganador.id]){
+      db.players[ganador.id]={kills:0,wins:0};
+    }
+    db.players[ganador.id].wins++;
+  }
+
+  saveDB(db);
 
   const ranking = Object.entries(mem.kills)
     .sort((a,b)=>b[1]-a[1])
@@ -249,20 +273,25 @@ async function start(msg,modo){
 
   let mem = {
     partidaActiva:true,
+    pausado:false,
     modo,
+    temporada:1,
     jugadores,
     ronda:1,
     kills:{},
     muertosTotales:0,
+    historial:[],
     traiciones:[],
-    esDeDia:true,
+    acciones:{},
+    canalId:msg.channel.id,
     alianzas:[],
     bounties:[],
-    clima:"☀️ Normal"
+    clima:"☀️ Normal",
+    esDeDia:true
   };
 
   saveMemory(mem);
-  msg.reply("🎮 Iniciando");
+  msg.reply("🎮 Partida iniciada");
 
   loop(msg.channel);
 }
@@ -273,6 +302,7 @@ client.on(Events.MessageCreate, async msg=>{
 
   const c = msg.content.toLowerCase();
   let mem = loadMemory();
+  let db = loadDB();
 
   if(c==="!hambre") start(msg,"hambre");
   if(c==="!calamar") start(msg,"calamar");
@@ -288,8 +318,8 @@ client.on(Events.MessageCreate, async msg=>{
 
     if(Math.random()<prob){
       matar(target,mem,atacante);
-      msg.reply("⚔️ kill");
-    }else msg.reply("⚠️ fail");
+      msg.reply(`⚔️ Eliminaste a <@${target.id}>`);
+    }else msg.reply("⚠️ Fallaste");
 
     atacante.cooldown=2;
     saveMemory(mem);
@@ -297,22 +327,78 @@ client.on(Events.MessageCreate, async msg=>{
 
   if(c==="!esconderse"){
     const j = mem.jugadores.find(x=>x.id===msg.author.id);
-    j.escondido=true;
+    if(j){
+      j.escondido=true;
+      saveMemory(mem);
+      msg.reply("🫥 Te escondiste");
+    }
+  }
+
+  if(c==="!inventario"){
+    const j = mem.jugadores.find(x=>x.id===msg.author.id);
+    msg.reply(`🎒 ${j?.item || "Nada"}`);
+  }
+
+  if(c==="!kills"){
+    msg.reply(`💀 ${mem.kills[msg.author.id]||0}`);
+  }
+
+  if(c==="!tienda"){
+    msg.reply(Object.entries(db.tienda)
+      .map(([i,v])=>`${i}: ${v.precio}`)
+      .join("\n"));
+  }
+
+  if(c.startsWith("!comprar")){
+    let item = c.split(" ")[1];
+    let precio = db.tienda[item]?.precio;
+
+    if(!precio) return;
+
+    if(!db.players[msg.author.id]) db.players[msg.author.id]={kills:0,wins:0};
+
+    if(db.players[msg.author.id].kills < precio) return msg.reply("💀 No alcanza");
+
+    db.players[msg.author.id].kills -= precio;
+
+    let j = mem.jugadores.find(x=>x.id===msg.author.id);
+    if(j) j.item=item;
+
+    saveDB(db);
     saveMemory(mem);
-    msg.reply("🫥");
+
+    msg.reply(`🛒 Compraste ${item}`);
+  }
+
+  if(c==="!ranking"){
+    const r = Object.entries(db.players)
+      .sort((a,b)=>b[1].kills-a[1].kills)
+      .slice(0,10)
+      .map(([id,d])=>`<@${id}>: ${d.kills}`)
+      .join("\n");
+
+    msg.reply(r||"Sin datos");
   }
 
   if(c.startsWith("!aliarse")){
     const o = msg.mentions.users.first();
-    mem.alianzas.push({a:msg.author.id,b:o.id});
-    saveMemory(mem);
-    msg.reply("🤝");
+    if(o){
+      mem.alianzas.push({a:msg.author.id,b:o.id});
+      saveMemory(mem);
+      msg.reply("🤝 Alianza creada");
+    }
   }
 
   if(c==="!romper"){
     mem.alianzas = mem.alianzas.filter(x=>x.a!==msg.author.id && x.b!==msg.author.id);
     saveMemory(mem);
-    msg.reply("💔");
+    msg.reply("💔 Alianzas rotas");
+  }
+
+  if(c==="!parar"){
+    mem.partidaActiva=false;
+    saveMemory(mem);
+    msg.reply("⛔ Partida detenida");
   }
 });
 
