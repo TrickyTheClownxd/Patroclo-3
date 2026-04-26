@@ -3,12 +3,22 @@
   "pausado": false,
   "modo": "hambre",
   "temporada": 1,
+
   "jugadores": [],
+
   "ronda": 0,
   "kills": {},
   "muertosTotales": 0,
+
   "historial": [],
   "traiciones": [],
   "acciones": {},
-  "canalId": null
+
+  "canalId": null,
+
+  "alianzas": [],
+  "bounties": [],
+
+  "clima": "☀️ Normal",
+  "esDeDia": true
 }
