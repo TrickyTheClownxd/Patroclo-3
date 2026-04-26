@@ -1,15 +1,23 @@
 {
   "players": {},
+
   "global": {
     "eventosDesbloqueados": [],
     "partidasJugadas": 0,
     "killsTotales": 0
   },
+
   "apuestas": {},
+
   "historialJugadores": {},
+
   "tienda": {
     "cuchillo": { "precio": 2 },
     "arco": { "precio": 3 },
     "botiquin": { "precio": 2 }
+  },
+
+  "economia": {
+    "moneda": "kills"
   }
 }
