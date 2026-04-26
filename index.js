@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Events } = require('discord.js');
 require('dotenv').config();
 const fs = require("fs");
 const http = require("http");
@@ -20,36 +20,29 @@ const sleep = ms => new Promise(r=>setTimeout(r,ms));
 const loadMemory = () => JSON.parse(fs.readFileSync("memory.json"));
 const saveMemory = m => fs.writeFileSync("memory.json", JSON.stringify(m,null,2));
 
-const loadDB = () => JSON.parse(fs.readFileSync("db.json"));
-const saveDB = d => fs.writeFileSync("db.json", JSON.stringify(d,null,2));
-
-// ===== NORMALIZADOR (ANTI CRASH) =====
+// ===== NORMALIZADOR =====
 function normalizarMem(mem){
+  mem.partidaActiva ??= false;
+  mem.pausado ??= false;
+  mem.jugadores ??= [];
 
-  if(!mem.partidaActiva) mem.partidaActiva = false;
-  if(!mem.pausado) mem.pausado = false;
-  if(!mem.modo) mem.modo = "hambre";
+  mem.kills ??= {};
+  mem.muertosTotales ??= 0;
 
-  if(!mem.jugadores) mem.jugadores = [];
+  mem.acciones ??= {};
+  mem.bounties ??= [];
+  mem.alianzas ??= [];
+  mem.apuestas ??= {};
 
-  if(!mem.kills) mem.kills = {};
-  if(!mem.muertosTotales) mem.muertosTotales = 0;
+  mem.zonas ??= ["bosque","río","colinas","cueva","ruinas"];
+  mem.zonasCerradas ??= [];
 
-  if(!mem.historial) mem.historial = [];
-  if(!mem.traiciones) mem.traiciones = [];
-  if(!mem.acciones) mem.acciones = {};
+  mem.muertesDia ??= [];
 
-  if(!mem.alianzas) mem.alianzas = [];
-  if(!mem.bounties) mem.bounties = [];
-  if(!mem.apuestas) mem.apuestas = {};
+  mem.esDeDia ??= true;
 
-  if(!mem.clima) mem.clima = "☀️ Normal";
-  if(mem.esDeDia === undefined) mem.esDeDia = true;
-
-  if(!mem.zonas) mem.zonas = ["bosque","río","colinas","cueva","ruinas"];
-  if(!mem.zonasCerradas) mem.zonasCerradas = [];
-
-  if(!mem.loopActivo) mem.loopActivo = false;
+  mem.ronda ??= 1;
+  mem.loopActivo ??= false;
 
   return mem;
 }
@@ -66,35 +59,19 @@ function matar(j, mem, killer=null){
   j.vivo = false;
   mem.muertosTotales++;
 
-  let db = loadDB();
+  // registrar muerte del día
+  mem.muertesDia.push(j.id);
 
   if(killer){
-    mem.kills[killer.id] = (mem.kills[killer.id] || 0) + 1;
-
-    if(!db.players[killer.id]){
-      db.players[killer.id] = {kills:0,wins:0};
-    }
-
-    db.players[killer.id].kills++;
+    mem.kills[killer.id] = (mem.kills[killer.id]||0)+1;
 
     if(mem.bounties && mem.bounties.includes(j.id)){
-      mem.kills[killer.id] += 3;
-    }
-
-    // TRAICIÓN
-    if(killer.compañero === j.id){
-      mem.traiciones.push({
-        traidor: killer.id,
-        victima: j.id,
-        ronda: mem.ronda
-      });
+      mem.kills[killer.id]+=3;
     }
   }
-
-  saveDB(db);
 }
 
-// ===== PROBABILIDAD =====
+// ===== PROB =====
 function calcularProb(a,t,mem){
   let prob = 0.4;
 
@@ -106,12 +83,10 @@ function calcularProb(a,t,mem){
 
   if(a.zona !== t.zona) prob-=0.5;
 
-  const alianza = mem.alianzas.find(al =>
-    (al.a===a.id && al.b===t.id) ||
-    (al.b===a.id && al.a===t.id)
-  );
+  if(t.escondido) prob-=0.3;
 
-  if(alianza) prob-=0.5;
+  // noche más difícil
+  if(!mem.esDeDia) prob -= 0.1;
 
   return prob;
 }
@@ -119,25 +94,64 @@ function calcularProb(a,t,mem){
 // ===== LOOP =====
 async function loop(channel){
 
-  let mem = normalizarMem(loadMemory());
+  while(true){
 
-  while(mem.partidaActiva && mem.jugadores.filter(j=>j.vivo).length > 1){
+    let mem = normalizarMem(loadMemory());
+
+    if(!mem.partidaActiva) break;
+
+    const vivos = mem.jugadores.filter(j=>j.vivo);
+    if(vivos.length <= 1) break;
+
+    await channel.send(`🔄 Ronda ${mem.ronda}`);
+    await channel.send("🕒 10s para acciones (!accion ...)");
+
+    await sleep(10000);
 
     mem = normalizarMem(loadMemory());
 
-    const vivos = mem.jugadores.filter(j=>j.vivo);
-    const [a,b] = vivos.sort(()=>Math.random()-0.5);
+    // ===== ACCIONES =====
+    for(const j of mem.jugadores.filter(x=>x.vivo)){
 
-    if(a && b){
-      let prob = calcularProb(a,b,mem);
+      const acc = mem.acciones[j.id];
+      if(!acc) continue;
 
-      if(Math.random() < prob){
-        matar(b,mem,a);
-        await channel.send(`⚔️ <@${a.id}> mató a <@${b.id}>`);
+      // MOVERSE
+      if(acc.tipo === "moverse" && acc.zona){
+        if(!mem.zonasCerradas.includes(acc.zona)){
+          j.zona = acc.zona;
+          await channel.send(`🚶 <@${j.id}> fue a ${acc.zona}`);
+        }
+      }
+
+      // ESCONDERSE
+      if(acc.tipo === "esconderse"){
+        j.escondido = true;
+        await channel.send(`🫥 <@${j.id}> se escondió`);
+      }
+
+      // ATACAR
+      if(acc.tipo === "atacar" && acc.objetivo){
+        const target = mem.jugadores.find(x=>x.id===acc.objetivo);
+
+        if(target && target.vivo){
+
+          let prob = calcularProb(j,target,mem);
+
+          if(Math.random() < prob){
+            matar(target,mem,j);
+            await channel.send(`⚔️ <@${j.id}> mató a <@${target.id}>`);
+          } else {
+            await channel.send(`⚠️ <@${j.id}> falló`);
+          }
+        }
       }
     }
 
-    // ZONAS
+    // limpiar acciones
+    mem.acciones = {};
+
+    // ===== CIERRE DE ZONAS =====
     if(mem.ronda % 5 === 0){
       const abiertas = mem.zonas.filter(z=>!mem.zonasCerradas.includes(z));
 
@@ -155,39 +169,64 @@ async function loop(channel){
       }
     }
 
-    // BOUNTY
+    // ===== BOUNTY =====
     if(mem.ronda % 3 === 0){
-      const target = pick(vivos);
-      if(target){
+      const vivos2 = mem.jugadores.filter(j=>j.vivo);
+      const target = pick(vivos2);
+
+      if(target && !mem.bounties.includes(target.id)){
         mem.bounties.push(target.id);
         await channel.send(`🎯 Recompensa por <@${target.id}>`);
       }
     }
 
+    // ===== FIN DEL DÍA =====
+    if(mem.ronda % 5 === 0){
+
+      await channel.send("🌙 La noche cae...");
+      await sleep(2000);
+
+      const muertos = mem.muertesDia.length;
+
+      if(muertos === 0){
+        await channel.send("🔇 No se escuchan disparos...");
+      } else {
+
+        const tiros = "💥".repeat(Math.min(muertos,10));
+
+        await channel.send(`🔊 Se escuchan disparos a lo lejos...\n${tiros}`);
+
+        const lista = mem.muertesDia
+          .map(id=>`💀 <@${id}>`)
+          .join("\n");
+
+        await channel.send(`🪦 Caídos del día:\n${lista}`);
+      }
+
+      mem.muertesDia = [];
+      mem.esDeDia = !mem.esDeDia;
+
+      await sleep(2000);
+    }
+
+    // reset estados
+    mem.jugadores.forEach(j=> j.escondido=false);
+
     mem.ronda++;
     saveMemory(mem);
 
-    await sleep(4000);
+    await sleep(3000);
   }
 
+  let mem = normalizarMem(loadMemory());
   const ganador = mem.jugadores.find(j=>j.vivo);
 
   if(ganador){
-    let db = loadDB();
-
-    if(!db.players[ganador.id]){
-      db.players[ganador.id]={kills:0,wins:0};
-    }
-
-    db.players[ganador.id].wins++;
-
-    saveDB(db);
-
-    channel.send(`🏆 Ganador: <@${ganador.id}>`);
+    await channel.send(`🏆 Ganador: <@${ganador.id}>`);
   }
 
-  mem.loopActivo = false;
   mem.partidaActiva = false;
+  mem.loopActivo = false;
   saveMemory(mem);
 }
 
@@ -197,7 +236,7 @@ async function start(msg){
   let mem = normalizarMem(loadMemory());
 
   if(mem.loopActivo){
-    return msg.reply("⚠️ Ya hay partida");
+    return msg.reply("⚠️ Ya hay partida activa");
   }
 
   const miembros = await msg.guild.members.fetch();
@@ -212,6 +251,10 @@ async function start(msg){
       zona: pick(["bosque","río","colinas","cueva","ruinas"])
     }));
 
+  if(jugadores.length < 2){
+    return msg.reply("❌ Necesitan mínimo 2 jugadores");
+  }
+
   mem = {
     partidaActiva:true,
     loopActivo:true,
@@ -219,11 +262,14 @@ async function start(msg){
     ronda:1,
     kills:{},
     muertosTotales:0,
-    alianzas:[],
+    acciones:{},
     bounties:[],
+    alianzas:[],
     apuestas:{},
     zonas:["bosque","río","colinas","cueva","ruinas"],
-    zonasCerradas:[]
+    zonasCerradas:[],
+    muertesDia:[],
+    esDeDia:true
   };
 
   saveMemory(mem);
@@ -242,17 +288,23 @@ client.on(Events.MessageCreate, async msg=>{
 
   if(c === "!hambre") start(msg);
 
-  if(c.startsWith("!mover")){
+  if(c.startsWith("!accion")){
+    if(!mem.partidaActiva) return;
+
     const j = mem.jugadores.find(x=>x.id===msg.author.id);
-    const zona = c.split(" ")[1];
+    if(!j || !j.vivo) return msg.reply("💀 No podés");
 
-    if(!mem.zonas.includes(zona)) return;
-    if(mem.zonasCerradas.includes(zona)) return msg.reply("☠️ Cerrada");
+    const partes = c.split(" ");
 
-    j.zona = zona;
+    mem.acciones[msg.author.id] = {
+      tipo: partes[1],
+      objetivo: msg.mentions.users.first()?.id || null,
+      zona: partes[2] || null
+    };
+
     saveMemory(mem);
 
-    msg.reply(`🚶 ${zona}`);
+    msg.reply(`🧠 Acción: ${partes[1]}`);
   }
 
   if(c === "!zona"){
@@ -261,6 +313,6 @@ client.on(Events.MessageCreate, async msg=>{
   }
 });
 
-// ===== LOGIN =====
+// ===== SERVER =====
 client.login(process.env.DISCORD_TOKEN);
 http.createServer((req,res)=>res.end("OK")).listen(process.env.PORT||8080);
