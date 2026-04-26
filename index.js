@@ -31,7 +31,7 @@ async function narrar(txt){
     const r = await axios.post("https://api.groq.com/openai/v1/chat/completions",{
       model:"llama3-70b-8192",
       messages:[
-        {role:"system",content:"Narrador dramático estilo streamer argentino"},
+        {role:"system",content:"Narrador dramático argentino"},
         {role:"user",content:txt}
       ]
     },{
@@ -62,15 +62,15 @@ function matar(j, mem, killer=null){
     mem.kills[killer.id]++;
 
     if(!db.players[killer.id]){
-      db.players[killer.id] = { kills:0, wins:0 };
+      db.players[killer.id]={kills:0,wins:0};
     }
 
     db.players[killer.id].kills++;
     db.global.killsTotales++;
 
     if(mem.bounties.includes(j.id)){
-      mem.kills[killer.id]+=2;
-      db.players[killer.id].kills+=2;
+      mem.kills[killer.id]+=3;
+      db.players[killer.id].kills+=3;
     }
   }
 
@@ -81,9 +81,17 @@ function asignarDistritos(jugadores){
   let d=1;
   for(let i=0;i<jugadores.length;i+=2){
     jugadores[i].distrito=d;
-    if(jugadores[i+1]) jugadores[i+1].distrito=d;
+    if(jugadores[i+1]){
+      jugadores[i+1].distrito=d;
+    }else{
+      jugadores[i].distrito = Math.ceil(Math.random()*d);
+    }
     d++;
   }
+
+  jugadores.forEach(j=>{
+    j.compañero = jugadores.find(x => x.distrito === j.distrito && x.id !== j.id)?.id || null;
+  });
 }
 
 function toggleDia(mem){
@@ -107,38 +115,24 @@ function calcularProb(a,t,mem){
   if(t.herido) prob+=0.2;
 
   if(t.escondido) prob-=0.3;
+
   if(a.distrito===t.distrito) prob-=0.25;
+  if(a.compañero === t.id) prob-=0.4;
 
-  if(mem.alianzas.find(x =>
-    (x.a===a.id && x.b===t.id)||(x.a===t.id && x.b===a.id)
-  )) prob-=0.5;
+  if(!mem.esDeDia) prob+=0.15;
+  else prob+=0.05;
 
-  if(!mem.esDeDia) prob+=0.1;
-
-  if(mem.clima.includes("Niebla")) prob-=0.15;
-  if(mem.clima.includes("Frío")) prob-=0.1;
+  if(mem.clima.includes("Niebla")) prob-=0.25;
+  if(mem.clima.includes("Lluvia")) prob-=0.1;
+  if(mem.clima.includes("Frío")) prob-=0.2;
 
   return prob;
 }
 
 // ===== EVENTOS =====
-function eventoCornucopia(mem){
-  const vivos = mem.jugadores.filter(j=>j.vivo);
-  const a = pick(vivos);
-  const ev = pick(eventosCornucopia);
-
-  let txt = ev.t.replace("{a}",`<@${a.id}>`);
-
-  if(ev.k.includes("a")) matar(a,mem);
-  if(ev.item) a.item = ev.item;
-
-  return txt;
-}
-
 function eventoHambre(mem){
   const vivos = mem.jugadores.filter(j=>j.vivo);
   const [a,b,c,d] = [...vivos].sort(()=>Math.random()-0.5);
-
   const ev = pick(eventosHambre);
 
   let txt = ev.t
@@ -163,7 +157,6 @@ function eventoHambre(mem){
 function eventoCalamar(mem){
   const vivos = mem.jugadores.filter(j=>j.vivo);
   const [a,b] = [...vivos].sort(()=>Math.random()-0.5);
-
   const ev = pick(eventosCalamar);
 
   let txt = ev.t
@@ -186,9 +179,19 @@ function eventoCalamar(mem){
 async function loop(channel){
   let mem = loadMemory();
 
-  for(let i=0;i<mem.jugadores.length;i++){
-    await channel.send("🏁 "+eventoCornucopia(mem));
-    await sleep(1200);
+  // CORNUCOPIA POR TURNOS
+  for(const j of mem.jugadores){
+    if(!j.vivo) continue;
+
+    const ev = pick(eventosCornucopia);
+
+    let txt = ev.t.replace("{a}", `<@${j.id}>`);
+
+    if(ev.k.includes("a")) matar(j,mem);
+    if(ev.item) j.item = ev.item;
+
+    await channel.send("🏁 " + txt);
+    await sleep(1500);
   }
 
   while(mem.partidaActiva && mem.jugadores.filter(j=>j.vivo).length > 1){
@@ -207,6 +210,13 @@ async function loop(channel){
         .setDescription(txt)]
     });
 
+    // HERIDOS pueden morir
+    mem.jugadores.forEach(j=>{
+      if(j.herido && Math.random() < 0.3){
+        matar(j,mem);
+      }
+    });
+
     if(mem.ronda % 3 === 0){
       let t = pick(mem.jugadores.filter(j=>j.vivo));
       mem.bounties.push(t.id);
@@ -217,7 +227,14 @@ async function loop(channel){
       let estado = toggleDia(mem);
       let clima = cambiarClima(mem);
 
-      channel.send(`📊 Muertos: ${mem.muertosTotales}\n${estado}\n${clima}`);
+      const vivos = mem.jugadores.filter(j=>j.vivo).length;
+
+      channel.send(
+        `📊 INTERMEDIO\n` +
+        `💀 Muertos: ${mem.muertosTotales}\n` +
+        `🧍 Vivos: ${vivos}\n` +
+        `${estado}\n${clima}`
+      );
     }
 
     mem.ronda++;
@@ -232,23 +249,7 @@ async function loop(channel){
   }
 
   const ganador = mem.jugadores.find(j=>j.vivo);
-  let db = loadDB();
-
-  if(ganador){
-    if(!db.players[ganador.id]){
-      db.players[ganador.id]={kills:0,wins:0};
-    }
-    db.players[ganador.id].wins++;
-  }
-
-  saveDB(db);
-
-  const ranking = Object.entries(mem.kills)
-    .sort((a,b)=>b[1]-a[1])
-    .map(([id,k])=>`<@${id}>: ${k}`)
-    .join("\n");
-
-  channel.send(`🏆 <@${ganador.id}>\n${ranking}`);
+  channel.send(`🏆 Ganador: <@${ganador.id}>`);
 
   mem.partidaActiva=false;
   saveMemory(mem);
@@ -307,42 +308,6 @@ client.on(Events.MessageCreate, async msg=>{
   if(c==="!hambre") start(msg,"hambre");
   if(c==="!calamar") start(msg,"calamar");
 
-  if(c.startsWith("!atacar")){
-    const atacante = mem.jugadores.find(j=>j.id===msg.author.id);
-    const objetivo = msg.mentions.users.first();
-    const target = mem.jugadores.find(j=>j.id===objetivo?.id);
-
-    if(!atacante || !target) return;
-
-    let prob = calcularProb(atacante,target,mem);
-
-    if(Math.random()<prob){
-      matar(target,mem,atacante);
-      msg.reply(`⚔️ Eliminaste a <@${target.id}>`);
-    }else msg.reply("⚠️ Fallaste");
-
-    atacante.cooldown=2;
-    saveMemory(mem);
-  }
-
-  if(c==="!esconderse"){
-    const j = mem.jugadores.find(x=>x.id===msg.author.id);
-    if(j){
-      j.escondido=true;
-      saveMemory(mem);
-      msg.reply("🫥 Te escondiste");
-    }
-  }
-
-  if(c==="!inventario"){
-    const j = mem.jugadores.find(x=>x.id===msg.author.id);
-    msg.reply(`🎒 ${j?.item || "Nada"}`);
-  }
-
-  if(c==="!kills"){
-    msg.reply(`💀 ${mem.kills[msg.author.id]||0}`);
-  }
-
   if(c==="!tienda"){
     msg.reply(Object.entries(db.tienda)
       .map(([i,v])=>`${i}: ${v.precio}`)
@@ -368,37 +333,6 @@ client.on(Events.MessageCreate, async msg=>{
     saveMemory(mem);
 
     msg.reply(`🛒 Compraste ${item}`);
-  }
-
-  if(c==="!ranking"){
-    const r = Object.entries(db.players)
-      .sort((a,b)=>b[1].kills-a[1].kills)
-      .slice(0,10)
-      .map(([id,d])=>`<@${id}>: ${d.kills}`)
-      .join("\n");
-
-    msg.reply(r||"Sin datos");
-  }
-
-  if(c.startsWith("!aliarse")){
-    const o = msg.mentions.users.first();
-    if(o){
-      mem.alianzas.push({a:msg.author.id,b:o.id});
-      saveMemory(mem);
-      msg.reply("🤝 Alianza creada");
-    }
-  }
-
-  if(c==="!romper"){
-    mem.alianzas = mem.alianzas.filter(x=>x.a!==msg.author.id && x.b!==msg.author.id);
-    saveMemory(mem);
-    msg.reply("💔 Alianzas rotas");
-  }
-
-  if(c==="!parar"){
-    mem.partidaActiva=false;
-    saveMemory(mem);
-    msg.reply("⛔ Partida detenida");
   }
 });
 
