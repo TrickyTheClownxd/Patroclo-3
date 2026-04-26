@@ -11,6 +11,7 @@ const eventosCornucopia = [
 
 // ===== HAMBRE =====
 const eventosHambre = [
+
   // 🧊 SOCIALES / NEUTROS
   {t:"{a} construye una fogata.",k:[]},
   {t:"{a} y {b} se acurrucan para sobrevivir.",k:[]},
@@ -97,4 +98,9 @@ const eventosCalamar = [
   {t:"{a} forma alianza con {b}, pero luego lo traiciona y lo mata.",k:["b"]}
 ];
 
-module.exports = { eventosCornucopia, eventosHambre, eventosCalamar };
+// ===== EXPORT =====
+module.exports = {
+  eventosCornucopia,
+  eventosHambre,
+  eventosCalamar
+};
