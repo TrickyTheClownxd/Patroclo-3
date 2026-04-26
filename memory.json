@@ -20,5 +20,12 @@
   "bounties": [],
 
   "clima": "☀️ Normal",
-  "esDeDia": true
+  "esDeDia": true,
+
+  "zonas": ["bosque", "río", "colinas", "cueva", "ruinas"],
+  "zonasCerradas": [],
+
+  "eventoActual": null,
+  "loopActivo": false,
+  "ultimaInteraccion": 0
 }
