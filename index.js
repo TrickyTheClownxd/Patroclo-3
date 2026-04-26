@@ -1,3 +1,4 @@
+// ===== IMPORTS =====
 const { Client, GatewayIntentBits, Events, EmbedBuilder } = require('discord.js');
 require('dotenv').config();
 const fs = require("fs");
@@ -6,6 +7,7 @@ const axios = require("axios");
 
 const { eventosCornucopia, eventosHambre, eventosCalamar } = require("./eventos");
 
+// ===== CLIENT =====
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -31,7 +33,7 @@ async function narrar(txt){
     const r = await axios.post("https://api.groq.com/openai/v1/chat/completions",{
       model:"llama3-70b-8192",
       messages:[
-        {role:"system",content:"Narrador dramático argentino"},
+        {role:"system",content:"Narrador épico argentino"},
         {role:"user",content:txt}
       ]
     },{
@@ -77,15 +79,19 @@ function matar(j, mem, killer=null){
   saveDB(db);
 }
 
+// ===== DISTRITOS =====
 function asignarDistritos(jugadores){
   let d=1;
+
   for(let i=0;i<jugadores.length;i+=2){
     jugadores[i].distrito=d;
+
     if(jugadores[i+1]){
       jugadores[i+1].distrito=d;
     }else{
       jugadores[i].distrito = Math.ceil(Math.random()*d);
     }
+
     d++;
   }
 
@@ -94,17 +100,7 @@ function asignarDistritos(jugadores){
   });
 }
 
-function toggleDia(mem){
-  mem.esDeDia=!mem.esDeDia;
-  return mem.esDeDia?"☀️ Día":"🌙 Noche";
-}
-
-function cambiarClima(mem){
-  const climas=["☀️ Normal","🌧️ Lluvia","🌫️ Niebla","❄️ Frío"];
-  mem.clima=pick(climas);
-  return mem.clima;
-}
-
+// ===== PROBABILIDAD =====
 function calcularProb(a,t,mem){
   let prob=0.4;
 
@@ -114,17 +110,14 @@ function calcularProb(a,t,mem){
   if(a.herido) prob-=0.2;
   if(t.herido) prob+=0.2;
 
-  if(t.escondido) prob-=0.3;
+  if(a.zona !== t.zona) prob -= 0.5;
 
-  if(a.distrito===t.distrito) prob-=0.25;
-  if(a.compañero === t.id) prob-=0.4;
+  if(a.compañero === t.id) prob -= 0.4;
 
-  if(!mem.esDeDia) prob+=0.15;
-  else prob+=0.05;
+  if(!mem.esDeDia) prob += 0.15;
 
-  if(mem.clima.includes("Niebla")) prob-=0.25;
-  if(mem.clima.includes("Lluvia")) prob-=0.1;
-  if(mem.clima.includes("Frío")) prob-=0.2;
+  if(mem.clima.includes("Niebla")) prob -= 0.25;
+  if(mem.clima.includes("Frío")) prob -= 0.2;
 
   return prob;
 }
@@ -132,44 +125,19 @@ function calcularProb(a,t,mem){
 // ===== EVENTOS =====
 function eventoHambre(mem){
   const vivos = mem.jugadores.filter(j=>j.vivo);
-  const [a,b,c,d] = [...vivos].sort(()=>Math.random()-0.5);
+  const [a,b,c] = [...vivos].sort(()=>Math.random()-0.5);
+
   const ev = pick(eventosHambre);
 
   let txt = ev.t
     .replaceAll("{a}",`<@${a?.id}>`)
     .replaceAll("{b}",`<@${b?.id}>`)
-    .replaceAll("{c}",`<@${c?.id}>`)
-    .replaceAll("{d}",`<@${d?.id}>`);
+    .replaceAll("{c}",`<@${c?.id}>`);
 
   ev.k.forEach(k=>{
     if(k==="a") matar(a,mem);
     if(k==="b") matar(b,mem,a);
     if(k==="c") matar(c,mem,a);
-    if(k==="d") matar(d,mem,a);
-    if(k==="random_ab"){
-      Math.random()<0.5 ? matar(a,mem,b) : matar(b,mem,a);
-    }
-  });
-
-  return txt;
-}
-
-function eventoCalamar(mem){
-  const vivos = mem.jugadores.filter(j=>j.vivo);
-  const [a,b] = [...vivos].sort(()=>Math.random()-0.5);
-  const ev = pick(eventosCalamar);
-
-  let txt = ev.t
-    .replace("{a}",`<@${a?.id}>`)
-    .replace("{b}",`<@${b?.id}>`);
-
-  ev.k.forEach(k=>{
-    if(k==="b") matar(b,mem,a);
-    if(k==="random_group"){
-      vivos.forEach(j=>{
-        if(Math.random()<0.4) matar(j,mem);
-      });
-    }
   });
 
   return txt;
@@ -177,12 +145,11 @@ function eventoCalamar(mem){
 
 // ===== LOOP =====
 async function loop(channel){
+
   let mem = loadMemory();
 
-  // CORNUCOPIA POR TURNOS
+  // CORNUCOPIA
   for(const j of mem.jugadores){
-    if(!j.vivo) continue;
-
     const ev = pick(eventosCornucopia);
 
     let txt = ev.t.replace("{a}", `<@${j.id}>`);
@@ -190,74 +157,77 @@ async function loop(channel){
     if(ev.k.includes("a")) matar(j,mem);
     if(ev.item) j.item = ev.item;
 
-    await channel.send("🏁 " + txt);
-    await sleep(1500);
+    await channel.send("🏁 "+txt);
+    await sleep(1200);
   }
 
   while(mem.partidaActiva && mem.jugadores.filter(j=>j.vivo).length > 1){
 
     mem = loadMemory();
 
-    let txt = mem.modo==="calamar"
-      ? eventoCalamar(mem)
-      : eventoHambre(mem);
-
-    txt = await narrar(txt);
+    let txt = await narrar(eventoHambre(mem));
 
     await channel.send({
       embeds:[new EmbedBuilder()
-        .setTitle(`Ronda ${mem.ronda} | ${mem.esDeDia?"☀️":"🌙"}`)
+        .setTitle(`Ronda ${mem.ronda}`)
         .setDescription(txt)]
     });
 
-    // HERIDOS pueden morir
+    // ZONAS QUE SE CIERRAN
+    if(mem.ronda % 5 === 0){
+
+      const abiertas = mem.zonas.filter(z=>!mem.zonasCerradas.includes(z));
+
+      if(abiertas.length > 1){
+        const cerrada = pick(abiertas);
+        mem.zonasCerradas.push(cerrada);
+
+        channel.send(`☠️ La zona ${cerrada} es mortal`);
+
+        mem.jugadores.forEach(j=>{
+          if(j.vivo && j.zona === cerrada){
+            if(Math.random() < 0.7){
+              matar(j,mem);
+            }
+          }
+        });
+      }
+
+      // ZONA FINAL
+      if(mem.zonasCerradas.length >= mem.zonas.length-1){
+        const final = mem.zonas.find(z=>!mem.zonasCerradas.includes(z));
+
+        channel.send(`🔥 TODOS SON FORZADOS A ${final}`);
+
+        mem.jugadores.forEach(j=>{
+          j.zona = final;
+        });
+      }
+    }
+
+    // AVISO IA
     mem.jugadores.forEach(j=>{
-      if(j.herido && Math.random() < 0.3){
-        matar(j,mem);
+      if(j.vivo && mem.zonasCerradas.includes(j.zona)){
+        channel.send(`⚠️ <@${j.id}> está en zona peligrosa`);
       }
     });
 
-    if(mem.ronda % 3 === 0){
-      let t = pick(mem.jugadores.filter(j=>j.vivo));
-      mem.bounties.push(t.id);
-      channel.send(`🎯 Recompensa por <@${t.id}>`);
-    }
-
-    if(mem.ronda % 5 === 0){
-      let estado = toggleDia(mem);
-      let clima = cambiarClima(mem);
-
-      const vivos = mem.jugadores.filter(j=>j.vivo).length;
-
-      channel.send(
-        `📊 INTERMEDIO\n` +
-        `💀 Muertos: ${mem.muertosTotales}\n` +
-        `🧍 Vivos: ${vivos}\n` +
-        `${estado}\n${clima}`
-      );
-    }
-
     mem.ronda++;
-
-    mem.jugadores.forEach(j=>{
-      if(j.cooldown>0) j.cooldown--;
-      j.escondido=false;
-    });
-
     saveMemory(mem);
-    await sleep(5000);
+
+    await sleep(4000);
   }
 
   const ganador = mem.jugadores.find(j=>j.vivo);
   channel.send(`🏆 Ganador: <@${ganador.id}>`);
-
-  mem.partidaActiva=false;
-  saveMemory(mem);
 }
 
 // ===== START =====
-async function start(msg,modo){
+async function start(msg){
+
   const miembros = await msg.guild.members.fetch();
+
+  const zonas = ["bosque","río","colinas","cueva","ruinas"];
 
   const jugadores = miembros
     .filter(m=>!m.user.bot)
@@ -265,34 +235,27 @@ async function start(msg,modo){
       id:m.user.id,
       vivo:true,
       item:null,
-      escondido:false,
-      cooldown:0,
-      herido:false
+      herido:false,
+      zona: pick(zonas)
     }));
 
   asignarDistritos(jugadores);
 
   let mem = {
     partidaActiva:true,
-    pausado:false,
-    modo,
-    temporada:1,
     jugadores,
     ronda:1,
     kills:{},
     muertosTotales:0,
-    historial:[],
-    traiciones:[],
-    acciones:{},
-    canalId:msg.channel.id,
-    alianzas:[],
-    bounties:[],
-    clima:"☀️ Normal",
+    zonas,
+    zonasCerradas:[],
+    clima:"☀️",
     esDeDia:true
   };
 
   saveMemory(mem);
-  msg.reply("🎮 Partida iniciada");
+
+  msg.reply("🔥 Juego iniciado");
 
   loop(msg.channel);
 }
@@ -303,36 +266,24 @@ client.on(Events.MessageCreate, async msg=>{
 
   const c = msg.content.toLowerCase();
   let mem = loadMemory();
-  let db = loadDB();
 
-  if(c==="!hambre") start(msg,"hambre");
-  if(c==="!calamar") start(msg,"calamar");
+  if(c==="!hambre") start(msg);
 
-  if(c==="!tienda"){
-    msg.reply(Object.entries(db.tienda)
-      .map(([i,v])=>`${i}: ${v.precio}`)
-      .join("\n"));
-  }
+  if(c.startsWith("!mover")){
+    const j = mem.jugadores.find(x=>x.id===msg.author.id);
+    const zona = c.split(" ")[1];
 
-  if(c.startsWith("!comprar")){
-    let item = c.split(" ")[1];
-    let precio = db.tienda[item]?.precio;
+    if(mem.zonasCerradas.includes(zona)) return msg.reply("☠️ Cerrada");
 
-    if(!precio) return;
-
-    if(!db.players[msg.author.id]) db.players[msg.author.id]={kills:0,wins:0};
-
-    if(db.players[msg.author.id].kills < precio) return msg.reply("💀 No alcanza");
-
-    db.players[msg.author.id].kills -= precio;
-
-    let j = mem.jugadores.find(x=>x.id===msg.author.id);
-    if(j) j.item=item;
-
-    saveDB(db);
+    j.zona = zona;
     saveMemory(mem);
 
-    msg.reply(`🛒 Compraste ${item}`);
+    msg.reply(`🚶 ${zona}`);
+  }
+
+  if(c==="!zona"){
+    const j = mem.jugadores.find(x=>x.id===msg.author.id);
+    msg.reply(`📍 ${j?.zona}`);
   }
 });
 
