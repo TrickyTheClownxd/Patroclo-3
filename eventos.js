@@ -10,8 +10,7 @@ const eventosCornucopia = [
 ];
 
 // ===== HAMBRE =====
-const eventosHambre = [const eventos = [
-
+const eventosHambre = [
   // 🧊 SOCIALES / NEUTROS
   {t:"{a} construye una fogata.",k:[]},
   {t:"{a} y {b} se acurrucan para sobrevivir.",k:[]},
@@ -46,8 +45,8 @@ const eventosHambre = [const eventos = [
   {t:"{a} cae de un árbol y muere.",k:["a"]},
   {t:"{a} es picado por una serpiente y muere de disentería.",k:["a"]},
   {t:"{a} muere de disentería.",k:["a"]},
-  {t:"{a} se ahoga en un río y muere.",k:["a"]},              // NUEVO
-  {t:"{a} se intoxica con frutos venenosos y muere.",k:["a"]}, // NUEVO
+  {t:"{a} se ahoga en un río y muere.",k:["a"]},
+  {t:"{a} se intoxica con frutos venenosos y muere.",k:["a"]},
 
   // ⚔️ COMBATE
   {t:"{a} mata brutalmente a {b} con una piedra.",k:["b"]},
@@ -73,14 +72,14 @@ const eventosHambre = [const eventos = [
   {t:"{a} pierde el control y detona una bomba que mata a varios.",k:["a","b","c","d"],rare:true},
   {t:"{a} dispara una flecha hacia {b}, pero falla y golpea a {c}, que muere.",k:["c"]},
   {t:"{a} se sube a un árbol pero cae sobre {b} y mueren.",k:["a","b"]},
-  {t:"{a} provoca un incendio en el bosque y muere atrapado.",k:["a"]}, // NUEVO
-  {t:"{a} pisa una mina oculta y muere.",k:["a"]},                      // NUEVO
+  {t:"{a} provoca un incendio en el bosque y muere atrapado.",k:["a"]},
+  {t:"{a} pisa una mina oculta y muere.",k:["a"]},
 
   // 🎲 MIX
   {t:"{a} y {b} discuten y ambos mueren.",k:["a","b"]},
   {t:"{a} se sacrifica por {b} y ambos mueren.",k:["a","b"]},
   {t:"{a} y {b} se enfrentan y solo uno sobrevive.",k:["random_ab"]}
-];];
+];
 
 // ===== CALAMAR =====
 const eventosCalamar = [
