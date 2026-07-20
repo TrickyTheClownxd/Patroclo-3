@@ -132,28 +132,24 @@ function matar(j, mem, killer = null) {
     ronda: mem.ronda
   });
 
-  // Actualizar DB
   const db = loadDB();
   db.global.killsTotales = (db.global.killsTotales || 0) + 1;
 
   if (killer) {
     mem.kills[killer.id] = (mem.kills[killer.id] || 0) + 1;
 
-    // Guardar en DB del jugador
     if (!db.players[killer.id]) {
       db.players[killer.id] = { kills: 0, victorias: 0, dinero: 0, items: [] };
     }
     db.players[killer.id].kills = (db.players[killer.id].kills || 0) + 1;
     db.players[killer.id].dinero = (db.players[killer.id].dinero || 0) + 1;
 
-    // Bounty
     if (mem.bounties && mem.bounties.includes(j.id)) {
       mem.kills[killer.id] += 3;
       db.players[killer.id].kills += 3;
       db.players[killer.id].dinero += 3;
     }
 
-    // Compartir con aliados
     const alianza = mem.alianzas.find(a => a.includes(killer.id));
     if (alianza) {
       alianza.forEach(id => {
@@ -169,7 +165,6 @@ function matar(j, mem, killer = null) {
     }
   }
 
-  // Historial del muerto
   if (!db.historialJugadores[j.id]) {
     db.historialJugadores[j.id] = { partidas: 0, kills: 0, victorias: 0 };
   }
@@ -192,7 +187,6 @@ function calcularProb(a, t, mem) {
   if (t.escondido) prob -= 0.3;
   if (!mem.esDeDia) prob -= 0.1;
 
-  // Alianzas
   const alianza = mem.alianzas.find(a => a.includes(a.id) && a.includes(t.id));
   if (alianza) prob -= 0.3;
 
@@ -204,7 +198,6 @@ async function ejecutarEventoNarrativo(mem, channel) {
   let evento;
   let esCalamar = false;
 
-  // Determinar qué eventos usar según el modo
   if (mem.modo === "calamar" && chance(0.3)) {
     evento = pick(eventosCalamar);
     esCalamar = true;
@@ -214,32 +207,26 @@ async function ejecutarEventoNarrativo(mem, channel) {
 
   if (!evento) return;
 
-  // Obtener jugadores vivos
   const vivos = mem.jugadores.filter(j => j.vivo);
   if (vivos.length === 0) return;
 
-  // Preparar nombres para el evento
   let a = pick(vivos);
   let b = pick(vivos.filter(j => j.id !== a.id));
   let c = pick(vivos.filter(j => j.id !== a.id && j.id !== b?.id));
   let d = pick(vivos.filter(j => j.id !== a.id && j.id !== b?.id && j.id !== c?.id));
 
-  // Asegurar que haya suficientes jugadores para el evento
   let texto = evento.t;
   let muertos = [];
 
-  // Reemplazar placeholders
   texto = texto.replace(/{a}/g, `<@${a.id}>`);
   if (b) texto = texto.replace(/{b}/g, `<@${b.id}>`);
   if (c) texto = texto.replace(/{c}/g, `<@${c.id}>`);
   if (d) texto = texto.replace(/{d}/g, `<@${d.id}>`);
 
-  // Procesar kills del evento
   if (evento.k) {
     const kills = evento.k;
 
     if (kills.includes("random_group")) {
-      // Matar un grupo aleatorio (25-50% de los vivos)
       const numMuertos = Math.floor(vivos.length * (0.25 + Math.random() * 0.25));
       const seleccionados = vivos.sort(() => Math.random() - 0.5).slice(0, numMuertos);
       seleccionados.forEach(j => {
@@ -247,14 +234,12 @@ async function ejecutarEventoNarrativo(mem, channel) {
         muertos.push(j.id);
       });
     } else if (kills.includes("random_ab")) {
-      // Matar a A o B aleatoriamente
       const victima = chance(0.5) ? a : b;
       if (victima) {
         matar(victima, mem);
         muertos.push(victima.id);
       }
     } else {
-      // Matar específicos
       kills.forEach(id => {
         if (id === "a" && a) { matar(a, mem); muertos.push(a.id); }
         if (id === "b" && b) { matar(b, mem); muertos.push(b.id); }
@@ -264,10 +249,8 @@ async function ejecutarEventoNarrativo(mem, channel) {
     }
   }
 
-  // Registrar evento
   mem.eventoActual = evento.t;
 
-  // Enviar mensaje
   const embed = new EmbedBuilder()
     .setTitle(esCalamar ? "🦑 Evento de Calamar" : "🔥 Evento de los Juegos del Hambre")
     .setColor(esCalamar ? 0xFF4500 : 0xFF6347)
@@ -276,13 +259,15 @@ async function ejecutarEventoNarrativo(mem, channel) {
 
   await channel.send({ embeds: [embed] });
 
-  // Si hubo muertos, listarlos
   if (muertos.length > 0) {
     const listaMuertos = muertos.map(id => `💀 <@${id}>`).join("\n");
-    await channel.send(`🪦 Muertos en el evento:\n${listaMuertos}`);
+    const embedMuertos = new EmbedBuilder()
+      .setTitle("🪦 Muertos en el evento")
+      .setColor(0xFF0000)
+      .setDescription(listaMuertos);
+    await channel.send({ embeds: [embedMuertos] });
   }
 
-  // Guardar cambios
   saveMemory(mem);
 }
 
@@ -313,7 +298,10 @@ async function cornucopia(mem, channel) {
       texto += " 💀";
     }
 
-    await channel.send(`🏕️ ${texto}`);
+    const embedEvento = new EmbedBuilder()
+      .setDescription(texto)
+      .setColor(0x00FF00);
+    await channel.send({ embeds: [embedEvento] });
     await sleep(1000);
   }
 
@@ -464,7 +452,11 @@ async function loop(channel) {
           await channel.send(`🔊 Se escuchan disparos a lo lejos...\n${tiros}`);
 
           const lista = mem.muertesDia.map(id => `💀 <@${id}>`).join("\n");
-          await channel.send(`🪦 Caídos del día:\n${lista}`);
+          const embedMuertos = new EmbedBuilder()
+            .setTitle("🪦 Caídos del día")
+            .setColor(0xFF0000)
+            .setDescription(lista);
+          await channel.send({ embeds: [embedMuertos] });
         }
 
         mem.muertesDia = [];
@@ -472,7 +464,6 @@ async function loop(channel) {
         await sleep(2000);
       }
 
-      // Reset estados
       mem.jugadores.forEach(j => j.escondido = false);
 
       mem.ronda++;
@@ -481,7 +472,6 @@ async function loop(channel) {
 
       await sleep(3000);
 
-      // Verificar ganador
       const vivosCheck = mem.jugadores.filter(j => j.vivo);
       if (vivosCheck.length <= 1) break;
     }
@@ -493,7 +483,6 @@ async function loop(channel) {
     if (ganador) {
       const db = loadDB();
 
-      // Registrar victoria
       if (!db.players[ganador.id]) {
         db.players[ganador.id] = { kills: 0, victorias: 0, dinero: 0, items: [] };
       }
@@ -522,7 +511,6 @@ async function loop(channel) {
 
       await channel.send({ embeds: [embedGanador] });
 
-      // Top kills de la partida
       const topKills = Object.entries(mem.kills)
         .sort((a, b) => b[1] - a[1])
         .slice(0, 3)
@@ -548,15 +536,15 @@ async function loop(channel) {
   }
 }
 
-// ===== START =====
-async function start(msg, modo = "hambre") {
+// ===== START (adaptado para mensajes e interacciones) =====
+async function start(ctx, modo = "hambre") {
   let mem = normalizarMem(loadMemory());
 
   if (mem.loopActivo) {
-    return msg.reply("⚠️ Ya hay partida activa");
+    return ctx.reply("⚠️ Ya hay partida activa");
   }
 
-  const miembros = await msg.guild.members.fetch();
+  const miembros = await ctx.guild.members.fetch();
 
   const jugadores = miembros
     .filter(m => !m.user.bot)
@@ -570,7 +558,7 @@ async function start(msg, modo = "hambre") {
     }));
 
   if (jugadores.length < 2) {
-    return msg.reply("❌ Necesitan mínimo 2 jugadores");
+    return ctx.reply("❌ Necesitan mínimo 2 jugadores");
   }
 
   mem = {
@@ -586,7 +574,7 @@ async function start(msg, modo = "hambre") {
     historial: [],
     traiciones: [],
     acciones: {},
-    canalId: msg.channel.id,
+    canalId: ctx.channel.id,
     alianzas: [],
     bounties: [],
     clima: "☀️ Normal",
@@ -610,16 +598,17 @@ async function start(msg, modo = "hambre") {
     )
     .setFooter({ text: `¡Que empiecen los ${modo === "calamar" ? "juegos" : "juegos del hambre"}!` });
 
-  await msg.reply({ embeds: [embedInicio] });
+  await ctx.reply({ embeds: [embedInicio] });
 
-  // Cornucopia inicial
   await sleep(2000);
-  await cornucopia(mem, msg.channel);
+  await cornucopia(mem, ctx.channel);
 
-  loop(msg.channel);
+  loop(ctx.channel);
 }
 
-// ===== COMANDOS =====
+// ============================================================
+//  COMANDOS DE PREFIJO (!)
+// ============================================================
 client.on(Events.MessageCreate, async msg => {
   if (msg.author.bot) return;
 
@@ -818,17 +807,21 @@ client.on(Events.MessageCreate, async msg => {
     }
 
     // ===== AYUDA =====
-    if (c === "!ayuda" || c === "!help") {
+    if (c === "!ayuda" || c === "!help" || c === "!cmdayuda") {
       const embed = new EmbedBuilder()
-        .setTitle("📚 Comandos de Patroclo 3")
+        .setTitle("📚 Patroclo 3 - Comandos")
         .setColor(0x00FFFF)
+        .setDescription("¡Sobrevive a los Juegos del Hambre o al Juego del Calamar!")
         .addFields(
-          { name: "🎮 Juego", value: "`!hambre` - Juegos del Hambre\n`!calamar` - Juego del Calamar\n`!pausar` - Pausar/Reanudar", inline: false },
-          { name: "⚔️ Acciones", value: "`!accion atacar @usuario` - Atacar\n`!accion moverse zona` - Moverse\n`!accion esconderse` - Esconderse\n`!accion curar` - Curarse", inline: false },
-          { name: "📍 Información", value: "`!estado` - Tu estado\n`!mapa` - Ver mapa\n`!zona` - Tu zona\n`!top` - Rankings", inline: false },
-          { name: "🤝 Social", value: "`!aliarse @usuario` - Alianza\n`!romper @usuario` - Romper alianza", inline: false }
+          { name: "🎮 Iniciar partida", value: "`!hambre` - Juegos del Hambre\n`!calamar` - Juego del Calamar\n`/hambre` - Slash\n`/calamar` - Slash", inline: false },
+          { name: "⚔️ Acciones (durante la partida)", value: "`!accion atacar @usuario` - Atacar\n`!accion moverse zona` - Moverse\n`!accion esconderse` - Esconderse\n`!accion curar` - Curarse", inline: false },
+          { name: "📍 Información", value: "`!estado` - Ver tu estado\n`!mapa` - Ver mapa de zonas\n`!zona` - Ver tu zona actual\n`!top` - Rankings globales", inline: false },
+          { name: "🤝 Social", value: "`!aliarse @usuario` - Formar alianza\n`!romper @usuario` - Romper alianza", inline: false },
+          { name: "📦 Economía", value: "`!inventario` - Ver tus items\n`!tienda` - Ver tienda\n`!comprar [item]` - Comprar item", inline: false },
+          { name: "⏸️ Control", value: "`!pausar` - Pausar/Reanudar partida", inline: false },
+          { name: "❓ Ayuda", value: "`!ayuda` `!help` `!cmdayuda` - Este mensaje", inline: false }
         )
-        .setFooter({ text: "¡Sobrevive!" });
+        .setFooter({ text: "¡Que empiecen los juegos!" });
 
       msg.reply({ embeds: [embed] });
     }
@@ -839,12 +832,48 @@ client.on(Events.MessageCreate, async msg => {
   }
 });
 
-// ===== SERVER =====
-client.once(Events.ClientReady, () => {
-  console.log(`✅ Patroclo 3 conectado como ${client.user.tag}`);
-  console.log(`📊 Servidores: ${client.guilds.cache.size}`);
-  console.log(`🔄 Usa !hambre o !calamar para iniciar`);
+// ============================================================
+//  COMANDOS SLASH (/)
+// ============================================================
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'hambre') {
+    await start(interaction, 'hambre');
+  } else if (interaction.commandName === 'calamar') {
+    await start(interaction, 'calamar');
+  }
 });
 
+// ============================================================
+//  REGISTRO DE COMANDOS SLASH
+// ============================================================
+client.once(Events.ClientReady, async () => {
+  console.log(`✅ Patroclo 3 conectado como ${client.user.tag}`);
+  console.log(`📊 Servidores: ${client.guilds.cache.size}`);
+
+  try {
+    const commands = [
+      {
+        name: 'hambre',
+        description: 'Inicia una partida de los Juegos del Hambre'
+      },
+      {
+        name: 'calamar',
+        description: 'Inicia una partida del Juego del Calamar'
+      }
+    ];
+    await client.application.commands.set(commands);
+    console.log('✅ Comandos slash registrados: /hambre y /calamar');
+  } catch (error) {
+    console.error('❌ Error al registrar comandos slash:', error);
+  }
+
+  console.log(`🔄 Usa !hambre, !calamar, /hambre o /calamar para iniciar`);
+});
+
+// ============================================================
+//  SERVER
+// ============================================================
 client.login(process.env.DISCORD_TOKEN);
 http.createServer((req, res) => res.end("OK")).listen(process.env.PORT || 8080);
